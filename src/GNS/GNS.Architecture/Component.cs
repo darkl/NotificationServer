@@ -1,201 +1,52 @@
-﻿namespace GNS.Architecture
+﻿namespace GNS.Architecture;
+
+public abstract class Component : IPublisher, IRecipient
 {
-    public abstract class Component : IRecipient
+    private readonly string _uniqueName;
+    private readonly Publisher _publisher;
+
+    public Component(string uniqueName)
     {
-        private string _uniqueName;
-        // Primary subscription index by rule for efficient matching
-        private readonly Dictionary<IRule, HashSet<IRecipient>> _subscriptionsByRule = new Dictionary<IRule, HashSet<IRecipient>>();
-        // Secondary index by recipient for efficient unsubscribe operations
-        private readonly Dictionary<IRecipient, HashSet<IRule>> _rulesByRecipient = new Dictionary<IRecipient, HashSet<IRule>>();
-
-        protected Component(string uniqueName)
-        {
-            if (string.IsNullOrEmpty(uniqueName))
-                throw new ArgumentException("Component name cannot be null or empty", nameof(uniqueName));
-
-            _uniqueName = uniqueName;
-        }
-
-        public string UniqueName => _uniqueName;
-
-        /// <summary>
-        /// Gets or sets the maximum size of event groups that will be sent to recipients.
-        /// If set to a positive value, larger event groups will be split into smaller chunks.
-        /// If set to 0 or negative, no splitting will occur.
-        /// </summary>
-        public int EventGroupMaxSize { get; set; }
-
-        protected void Publish(EventGroup eventGroup)
-        {
-            if (eventGroup == null || eventGroup.Count == 0)
-                return;
-
-            // First, create a dictionary to collect events by rule
-            var eventsByRule = new Dictionary<IRule, EventGroup>();
-
-            // Process each event individually against each rule
-            foreach (IEvent evt in eventGroup)
-            {
-                foreach (var rulePair in _subscriptionsByRule)
-                {
-                    IRule rule = rulePair.Key;
-
-                    // Check if the event matches this rule (only once per rule)
-                    if (rule.IsActivated(evt))
-                    {
-                        // Add this event to the group for this rule
-                        if (!eventsByRule.TryGetValue(rule, out EventGroup matchedEvents))
-                        {
-                            matchedEvents = new EventGroup();
-                            eventsByRule.Add(rule, matchedEvents);
-                        }
-                        matchedEvents.Add(evt);
-                    }
-                }
-            }
-
-            // Now notify all recipients with the matched events for each rule
-            foreach (var eventsByRulePair in eventsByRule)
-            {
-                IRule rule = eventsByRulePair.Key;
-                EventGroup matchedEvents = eventsByRulePair.Value;
-
-                if (matchedEvents.Count > 0 && _subscriptionsByRule.TryGetValue(rule, out HashSet<IRecipient> recipients))
-                {
-                    // First split events into chunks (if needed)
-                    List<EventGroup> chunks = new List<EventGroup>();
-
-                    // If EventGroupMaxSize is positive and the events exceed that size, split into chunks
-                    if (EventGroupMaxSize > 0 && matchedEvents.Count > EventGroupMaxSize)
-                    {
-                        // Split the matched events into chunks of the specified maximum size
-                        for (int i = 0; i < matchedEvents.Count; i += EventGroupMaxSize)
-                        {
-                            // Create a new event group for this chunk
-                            EventGroup chunk = new EventGroup();
-
-                            // Add events to the chunk (up to EventGroupMaxSize)
-                            int eventsToAdd = Math.Min(EventGroupMaxSize, matchedEvents.Count - i);
-                            for (int j = 0; j < eventsToAdd; j++)
-                            {
-                                chunk.Add(matchedEvents[i + j]);
-                            }
-
-                            chunks.Add(chunk);
-                        }
-                    }
-                    else
-                    {
-                        // If no splitting is needed, use the full event group
-                        chunks.Add(matchedEvents);
-                    }
-
-                    // Now send each chunk to all recipients
-                    foreach (EventGroup chunk in chunks)
-                    {
-                        foreach (IRecipient recipient in recipients)
-                        {
-                            recipient.HandleNotification(new Notification(chunk, rule));
-                        }
-                    }
-                }
-            }
-        }
-
-        public void HandleNotification(Notification notification)
-        {
-            if (notification == null)
-                throw new ArgumentNullException(nameof(notification));
-
-            // Clone the event group to prevent modification by other recipients
-            EventGroup eventGroupClone = (EventGroup)notification.EventGroup.Clone();
-
-            // In a real implementation, this would dispatch to the component's thread
-            // For simplicity, we'll directly call Consume here
-            Consume(eventGroupClone);
-        }
-
-        protected abstract void Consume(EventGroup eventGroup);
-
-        public void Subscribe(IRecipient recipient, IRule rule)
-        {
-            if (recipient == null)
-                throw new ArgumentNullException(nameof(recipient));
-            if (rule == null)
-                throw new ArgumentNullException(nameof(rule));
-
-            // Add to rule-based index
-            if (!_subscriptionsByRule.TryGetValue(rule, out HashSet<IRecipient> recipients))
-            {
-                recipients = new HashSet<IRecipient>();
-                _subscriptionsByRule.Add(rule, recipients);
-            }
-            recipients.Add(recipient);
-
-            // Add to recipient-based index
-            if (!_rulesByRecipient.TryGetValue(recipient, out HashSet<IRule> rules))
-            {
-                rules = new HashSet<IRule>();
-                _rulesByRecipient.Add(recipient, rules);
-            }
-            rules.Add(rule);
-        }
-
-        public void Unsubscribe(IRecipient recipient, IRule rule)
-        {
-            if (recipient == null)
-                throw new ArgumentNullException(nameof(recipient));
-            if (rule == null)
-                throw new ArgumentNullException(nameof(rule));
-
-            // Remove from rule-based index
-            if (_subscriptionsByRule.TryGetValue(rule, out HashSet<IRecipient> recipients))
-            {
-                recipients.Remove(recipient);
-                if (recipients.Count == 0)
-                {
-                    _subscriptionsByRule.Remove(rule);
-                }
-            }
-
-            // Remove from recipient-based index
-            if (_rulesByRecipient.TryGetValue(recipient, out HashSet<IRule> rules))
-            {
-                rules.Remove(rule);
-                if (rules.Count == 0)
-                {
-                    _rulesByRecipient.Remove(recipient);
-                }
-            }
-        }
-
-        public void Unsubscribe(IRecipient recipient)
-        {
-            if (recipient == null)
-                throw new ArgumentNullException(nameof(recipient));
-
-            // Get all rules this recipient has subscribed to
-            if (_rulesByRecipient.TryGetValue(recipient, out HashSet<IRule> rules))
-            {
-                // Make a copy to avoid modification during enumeration
-                var rulesCopy = rules.ToList();
-
-                // Remove recipient from each rule's subscribers
-                foreach (IRule rule in rulesCopy)
-                {
-                    if (_subscriptionsByRule.TryGetValue(rule, out HashSet<IRecipient> recipients))
-                    {
-                        recipients.Remove(recipient);
-                        if (recipients.Count == 0)
-                        {
-                            _subscriptionsByRule.Remove(rule);
-                        }
-                    }
-                }
-
-                // Remove recipient from index
-                _rulesByRecipient.Remove(recipient);
-            }
-        }
+        _uniqueName = uniqueName;
+        _publisher = new Publisher(uniqueName);
     }
+
+    public void Subscribe(IRecipient recipient, IRule rule)
+    {
+        _publisher.Subscribe(recipient, rule);
+    }
+
+    public void Unsubscribe(IRecipient recipient, IRule rule)
+    {
+        _publisher.Unsubscribe(recipient, rule);
+    }
+
+    public void Unsubscribe(IRecipient recipient)
+    {
+        _publisher.Unsubscribe(recipient);
+    }
+
+    public void Publish(EventGroup eventGroup)
+    {
+        _publisher.Publish(eventGroup);
+    }
+
+    public int EventGroupMaxSize
+    {
+        get => _publisher.EventGroupMaxSize;
+        set => _publisher.EventGroupMaxSize = value;
+    }
+
+    public void HandleNotification(Notification notification)
+    {
+        if (notification == null)
+            throw new ArgumentNullException(nameof(notification));
+
+
+        // In a real implementation, this would dispatch to the component's thread
+        // For simplicity, we'll directly call Consume here
+        Consume(notification.EventGroup);
+    }
+
+    protected abstract void Consume(EventGroup eventGroup);
 }
