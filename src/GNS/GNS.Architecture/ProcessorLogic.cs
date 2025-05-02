@@ -126,10 +126,18 @@ namespace GNS.Architecture
             var eventType = eventToProcess.GetType();
 
             // Check if we already have a cached handler for this exact event type
-            if (_handlerCache.TryGetValue(eventType, out var cachedHandler))
+            if (!_handlerCache.TryGetValue(eventType, out var cachedHandler))
             {
-                return cachedHandler(eventToProcess);
+                cachedHandler = GenerateHandleForEventType(eventType);
+                _handlerCache[eventType] = cachedHandler;
             }
+
+            return cachedHandler(eventToProcess);
+        }
+
+        private Func<IEvent, IEvent> GenerateHandleForEventType(Type eventType)
+        {
+            Func<IEvent, IEvent> result;
 
             // We need to find the best handler
             // Find all handlers that could handle this event type
@@ -139,31 +147,31 @@ namespace GNS.Architecture
             if (possibleHandlers.Count == 0)
             {
                 // No handler found - cache a null handler to avoid future lookups
-                _handlerCache[eventType] = _ => null;
-                return null;
+                result = _ => null;
+            }
+            else
+            { 
+                // Find the most specific handler using DefaultBinder.SelectMethod
+                var binder = Type.DefaultBinder;
+                var selectedMethod = (MethodInfo)binder.SelectMethod(
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                    possibleHandlers.ToArray(),
+                    new[] { eventType },
+                    null);
+
+                if (selectedMethod == null)
+                {
+                    // No handler selected - cache a null handler to avoid future lookups
+                    result = _ => null;
+                }
+                else
+                { 
+                    // Create a handler using reflection and cache it
+                    result = CreateProcessorHandlerViaReflection(selectedMethod, eventType);
+                }
             }
 
-            // Find the most specific handler using DefaultBinder.SelectMethod
-            var binder = Type.DefaultBinder;
-            var selectedMethod = (MethodInfo)binder.SelectMethod(
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-                possibleHandlers.ToArray(),
-                new[] { eventType },
-                null);
-
-            if (selectedMethod == null)
-            {
-                // No handler selected - cache a null handler to avoid future lookups
-                _handlerCache[eventType] = _ => null;
-                return null;
-            }
-
-            // Create a handler using reflection and cache it
-            var handler = CreateProcessorHandlerViaReflection(selectedMethod, eventType);
-            _handlerCache[eventType] = handler;
-
-            // Invoke the handler
-            return handler(eventToProcess);
+            return result;
         }
     }
 }
