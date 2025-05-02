@@ -1,8 +1,6 @@
-﻿using System;
-
-namespace GNS.Architecture
+﻿namespace GNS.Architecture
 {
-    public abstract partial class Component
+    public abstract class Component : IRecipient
     {
         private string _uniqueName;
         // Primary subscription index by rule for efficient matching
@@ -19,6 +17,13 @@ namespace GNS.Architecture
         }
 
         public string UniqueName => _uniqueName;
+
+        /// <summary>
+        /// Gets or sets the maximum size of event groups that will be sent to recipients.
+        /// If set to a positive value, larger event groups will be split into smaller chunks.
+        /// If set to 0 or negative, no splitting will occur.
+        /// </summary>
+        public int EventGroupMaxSize { get; set; }
 
         protected void Publish(EventGroup eventGroup)
         {
@@ -57,9 +62,41 @@ namespace GNS.Architecture
 
                 if (matchedEvents.Count > 0 && _subscriptionsByRule.TryGetValue(rule, out HashSet<IRecipient> recipients))
                 {
-                    foreach (IRecipient recipient in recipients)
+                    // First split events into chunks (if needed)
+                    List<EventGroup> chunks = new List<EventGroup>();
+
+                    // If EventGroupMaxSize is positive and the events exceed that size, split into chunks
+                    if (EventGroupMaxSize > 0 && matchedEvents.Count > EventGroupMaxSize)
                     {
-                        recipient.HandleNotification(new Notification(matchedEvents, rule));
+                        // Split the matched events into chunks of the specified maximum size
+                        for (int i = 0; i < matchedEvents.Count; i += EventGroupMaxSize)
+                        {
+                            // Create a new event group for this chunk
+                            EventGroup chunk = new EventGroup();
+
+                            // Add events to the chunk (up to EventGroupMaxSize)
+                            int eventsToAdd = Math.Min(EventGroupMaxSize, matchedEvents.Count - i);
+                            for (int j = 0; j < eventsToAdd; j++)
+                            {
+                                chunk.Add(matchedEvents[i + j]);
+                            }
+
+                            chunks.Add(chunk);
+                        }
+                    }
+                    else
+                    {
+                        // If no splitting is needed, use the full event group
+                        chunks.Add(matchedEvents);
+                    }
+
+                    // Now send each chunk to all recipients
+                    foreach (EventGroup chunk in chunks)
+                    {
+                        foreach (IRecipient recipient in recipients)
+                        {
+                            recipient.HandleNotification(new Notification(chunk, rule));
+                        }
                     }
                 }
             }
@@ -161,5 +198,4 @@ namespace GNS.Architecture
             }
         }
     }
-
 }
