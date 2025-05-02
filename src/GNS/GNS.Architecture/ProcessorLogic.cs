@@ -132,18 +132,9 @@ namespace GNS.Architecture
             }
 
             // We need to find the best handler
-            var possibleHandlers = new List<MethodInfo>();
-            var handlerTypes = new List<Type>();
-
             // Find all handlers that could handle this event type
-            foreach (var entry in _handlers)
-            {
-                if (entry.Key.IsAssignableFrom(eventType))
-                {
-                    handlerTypes.Add(entry.Key);
-                    possibleHandlers.Add(entry.Value);
-                }
-            }
+            var possibleHandlers = _handlers.Where(entry => entry.Key.IsAssignableFrom(eventType))
+                .Select(entry => entry.Value).ToList();
 
             if (possibleHandlers.Count == 0)
             {
