@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using GNS.Architecture.Utilities;
 
 namespace GNS.Architecture
 {
@@ -19,10 +20,10 @@ namespace GNS.Architecture
     public class ProcessorLogic : Logic
     {
         // Maps event types to delegate handlers
-        private readonly Dictionary<Type, Delegate> _handlers = new Dictionary<Type, Delegate>();
+        private readonly Dictionary<Type, MethodInfo> _handlers = new Dictionary<Type, MethodInfo>();
 
         // Cache of computed handler mappings for concrete event types
-        private readonly Dictionary<Type, Func<IEvent, IEvent>> _handlerCache = new Dictionary<Type, Func<IEvent, IEvent>>();
+        private readonly SwapDictionary<Type, Func<IEvent, IEvent>> _handlerCache = new SwapDictionary<Type, Func<IEvent, IEvent>>();
 
         protected ProcessorLogic(string uniqueName) : base(uniqueName)
         {
@@ -51,15 +52,8 @@ namespace GNS.Architecture
 
                 // Get the event type this processor handles
                 var eventType = parameters[0].ParameterType;
-
-                // Create a delegate for this method
-                var handler = Delegate.CreateDelegate(
-                    GetDelegateType(eventType, method.ReturnType),
-                    this,
-                    method);
-
                 // Add to our handler map
-                _handlers[eventType] = handler;
+                _handlers[eventType] = method;
             }
         }
 
@@ -147,7 +141,7 @@ namespace GNS.Architecture
                 if (entry.Key.IsAssignableFrom(eventType))
                 {
                     handlerTypes.Add(entry.Key);
-                    possibleHandlers.Add(entry.Value.Method);
+                    possibleHandlers.Add(entry.Value);
                 }
             }
 
