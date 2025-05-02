@@ -1,9 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.13.35818.85 d17.13
+VisualStudioVersion = 17.13.35818.85
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GNS.Architecture", "GNS.Architecture\GNS.Architecture.csproj", "{172C6692-E7BE-49CA-ACA9-829880CAEC6E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GNS.Tests", "GNS.Tests\GNS.Tests.csproj", "{BAD24C9B-15BD-4BAD-86B0-C8604533A131}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,6 +17,10 @@ Global
 		{172C6692-E7BE-49CA-ACA9-829880CAEC6E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{172C6692-E7BE-49CA-ACA9-829880CAEC6E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{172C6692-E7BE-49CA-ACA9-829880CAEC6E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BAD24C9B-15BD-4BAD-86B0-C8604533A131}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BAD24C9B-15BD-4BAD-86B0-C8604533A131}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BAD24C9B-15BD-4BAD-86B0-C8604533A131}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BAD24C9B-15BD-4BAD-86B0-C8604533A131}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

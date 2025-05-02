@@ -111,7 +111,7 @@ namespace GNS.Architecture
         private Func<IEvent, IEvent> CreateProcessorHandlerViaReflection(MethodInfo method, Type eventType)
         {
             // Get the generic method
-            var genericMethod = GetType().GetMethod(nameof(CreateProcessorHandler),
+            var genericMethod = typeof(ProcessorLogic).GetMethod(nameof(CreateProcessorHandler),
                 BindingFlags.Instance | BindingFlags.NonPublic);
 
             // Create the specific generic method for this event type
