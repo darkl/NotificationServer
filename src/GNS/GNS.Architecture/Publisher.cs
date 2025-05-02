@@ -1,12 +1,14 @@
-﻿namespace GNS.Architecture
+﻿using GNS.Architecture.Utilities;
+
+namespace GNS.Architecture
 {
     internal class Publisher : IPublisher
     {
         private string _uniqueName;
         // Primary subscription index by rule for efficient matching
-        private readonly Dictionary<IRule, HashSet<IRecipient>> _subscriptionsByRule = new Dictionary<IRule, HashSet<IRecipient>>();
+        private readonly SwapDictionary<IRule, ISet<IRecipient>> _subscriptionsByRule = new SwapDictionary<IRule, ISet<IRecipient>>();
         // Secondary index by recipient for efficient unsubscribe operations
-        private readonly Dictionary<IRecipient, HashSet<IRule>> _rulesByRecipient = new Dictionary<IRecipient, HashSet<IRule>>();
+        private readonly SwapDictionary<IRecipient, ISet<IRule>> _rulesByRecipient = new SwapDictionary<IRecipient, ISet<IRule>>();
 
         public Publisher(string uniqueName)
         {
@@ -60,7 +62,7 @@
                 IRule rule = eventsByRulePair.Key;
                 EventGroup matchedEvents = eventsByRulePair.Value;
 
-                if (matchedEvents.Count > 0 && _subscriptionsByRule.TryGetValue(rule, out HashSet<IRecipient> recipients))
+                if (matchedEvents.Count > 0 && _subscriptionsByRule.TryGetValue(rule, out ISet<IRecipient> recipients))
                 {
                     // First split events into chunks (if needed)
                     List<EventGroup> chunks = new List<EventGroup>();
@@ -110,17 +112,17 @@
                 throw new ArgumentNullException(nameof(rule));
 
             // Add to rule-based index
-            if (!_subscriptionsByRule.TryGetValue(rule, out HashSet<IRecipient> recipients))
+            if (!_subscriptionsByRule.TryGetValue(rule, out ISet<IRecipient> recipients))
             {
-                recipients = new HashSet<IRecipient>();
+                recipients = new SwapHashSet<IRecipient>();
                 _subscriptionsByRule.Add(rule, recipients);
             }
             recipients.Add(recipient);
 
             // Add to recipient-based index
-            if (!_rulesByRecipient.TryGetValue(recipient, out HashSet<IRule> rules))
+            if (!_rulesByRecipient.TryGetValue(recipient, out ISet<IRule> rules))
             {
-                rules = new HashSet<IRule>();
+                rules = new SwapHashSet<IRule>();
                 _rulesByRecipient.Add(recipient, rules);
             }
             rules.Add(rule);
@@ -134,7 +136,7 @@
                 throw new ArgumentNullException(nameof(rule));
 
             // Remove from rule-based index
-            if (_subscriptionsByRule.TryGetValue(rule, out HashSet<IRecipient> recipients))
+            if (_subscriptionsByRule.TryGetValue(rule, out ISet<IRecipient> recipients))
             {
                 recipients.Remove(recipient);
                 if (recipients.Count == 0)
@@ -144,7 +146,7 @@
             }
 
             // Remove from recipient-based index
-            if (_rulesByRecipient.TryGetValue(recipient, out HashSet<IRule> rules))
+            if (_rulesByRecipient.TryGetValue(recipient, out ISet<IRule> rules))
             {
                 rules.Remove(rule);
                 if (rules.Count == 0)
@@ -160,7 +162,7 @@
                 throw new ArgumentNullException(nameof(recipient));
 
             // Get all rules this recipient has subscribed to
-            if (_rulesByRecipient.TryGetValue(recipient, out HashSet<IRule> rules))
+            if (_rulesByRecipient.TryGetValue(recipient, out ISet<IRule> rules))
             {
                 // Make a copy to avoid modification during enumeration
                 var rulesCopy = rules.ToList();
@@ -168,7 +170,7 @@
                 // Remove recipient from each rule's subscribers
                 foreach (IRule rule in rulesCopy)
                 {
-                    if (_subscriptionsByRule.TryGetValue(rule, out HashSet<IRecipient> recipients))
+                    if (_subscriptionsByRule.TryGetValue(rule, out ISet<IRecipient> recipients))
                     {
                         recipients.Remove(recipient);
                         if (recipients.Count == 0)
