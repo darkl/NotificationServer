@@ -25,19 +25,16 @@ namespace GNS.Architecture
         public State NextState { get; set; }
     }
 
-    public abstract class StateDrivenEntity : IStateDrivenEntity
+    #region StateDrivenEntity Implementation
+    public abstract partial class StateDrivenEntity : IStateDrivenEntity
     {
+        private State _currentState = State.Uninitialized;
+        private readonly object _stateLock = new object();
+
         public State CurrentState
         {
-            get
-            {
-                throw new System.NotImplementedException();
-            }
-        }
-
-        public virtual void TransformTo(State state)
-        {
-            throw new System.NotImplementedException();
+            get { return _currentState; }
+            private set { _currentState = value; }
         }
 
         public event EventHandler<StateTransformEventArgs> StateTransforming;
@@ -49,5 +46,62 @@ namespace GNS.Architecture
         protected abstract void InnerStartedToInitialized();
         protected abstract void InnerAnyToInvalid();
         protected abstract void InnerInvalidToUnitialized();
+
+        public virtual void TransformTo(State state)
+        {
+            lock (_stateLock)
+            {
+                if (state == CurrentState)
+                    return;
+
+                var args = new StateTransformEventArgs
+                {
+                    PreviousState = CurrentState,
+                    NextState = state
+                };
+
+                OnStateTransforming(args);
+
+                switch (CurrentState)
+                {
+                    case State.Uninitialized:
+                        if (state == State.Initialized)
+                            InnerUninitializedToInitialized();
+                        break;
+
+                    case State.Initialized:
+                        if (state == State.Uninitialized)
+                            InnerInitializedToUninitialized();
+                        else if (state == State.Started)
+                            InnerInitializedToStarted();
+                        break;
+
+                    case State.Started:
+                        if (state == State.Initialized)
+                            InnerStartedToInitialized();
+                        break;
+                }
+
+                if (state == State.Invalid)
+                    InnerAnyToInvalid();
+                else if (CurrentState == State.Invalid && state == State.Uninitialized)
+                    InnerInvalidToUnitialized();
+
+                CurrentState = state;
+                OnStateTransformed(args);
+            }
+        }
+
+        protected virtual void OnStateTransforming(StateTransformEventArgs e)
+        {
+            StateTransforming?.Invoke(this, e);
+        }
+
+        protected virtual void OnStateTransformed(StateTransformEventArgs e)
+        {
+            StateTransformed?.Invoke(this, e);
+        }
     }
+    #endregion
+
 }

@@ -1,7 +1,9 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 2012
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GNS.Architecture", "GNS.Architecture\GNS.Architecture.csproj", "{D4A07E2E-32E0-4E11-8577-604778119CED}"
+# Visual Studio Version 17
+VisualStudioVersion = 17.13.35818.85 d17.13
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GNS.Architecture", "GNS.Architecture\GNS.Architecture.csproj", "{172C6692-E7BE-49CA-ACA9-829880CAEC6E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -9,12 +11,15 @@ Global
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{D4A07E2E-32E0-4E11-8577-604778119CED}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{D4A07E2E-32E0-4E11-8577-604778119CED}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{D4A07E2E-32E0-4E11-8577-604778119CED}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{D4A07E2E-32E0-4E11-8577-604778119CED}.Release|Any CPU.Build.0 = Release|Any CPU
+		{172C6692-E7BE-49CA-ACA9-829880CAEC6E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{172C6692-E7BE-49CA-ACA9-829880CAEC6E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{172C6692-E7BE-49CA-ACA9-829880CAEC6E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{172C6692-E7BE-49CA-ACA9-829880CAEC6E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {BAC5BCCF-E395-4DAE-9F95-4176403C3D03}
 	EndGlobalSection
 EndGlobal

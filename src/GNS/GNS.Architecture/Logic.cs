@@ -2,6 +2,10 @@
 {
     public abstract class Logic : Component
     {
+        protected Logic(string uniqueName) : base(uniqueName)
+        {
+        }
+
         protected override void Consume(EventGroup eventGroup)
         {
             EventGroup processed = ProcessEventGroup(eventGroup);
