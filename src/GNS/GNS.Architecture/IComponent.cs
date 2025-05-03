@@ -5,5 +5,9 @@
         string UniqueName { get; }
 
         IRuntimeContext RuntimeContext { get; set; }
+        
+        bool IsRoot { get; }
+
+        IEnumerable<IComponent> GetAttachedComponents();
     }
 }

@@ -184,5 +184,18 @@ namespace GNS.Architecture
                 _rulesByRecipient.Remove(recipient);
             }
         }
+
+        public void UnsubscribeAll()
+        {
+            foreach (IRecipient currentSubscriber in _rulesByRecipient.Keys)
+            {
+                this.Unsubscribe(currentSubscriber);
+            }
+        }
+
+        public IEnumerable<IRecipient> Subscribers()
+        {
+            return this._rulesByRecipient.Keys;
+        }
     }
 }

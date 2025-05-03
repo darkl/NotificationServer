@@ -1,13 +1,12 @@
 ﻿namespace GNS.Architecture;
 
-public abstract class Component : IPublisher, IRecipient
+public abstract class Component : StateDrivenEntity, IPublisher, IRecipient, IComponent
 {
-    private readonly string _uniqueName;
     private readonly Publisher _publisher;
 
     public Component(string uniqueName)
     {
-        _uniqueName = uniqueName;
+        UniqueName = uniqueName;
         _publisher = new Publisher(uniqueName);
     }
 
@@ -49,4 +48,37 @@ public abstract class Component : IPublisher, IRecipient
     }
 
     protected abstract void Consume(EventGroup eventGroup);
+    public IRuntimeContext RuntimeContext { get; set; }
+    public bool IsRoot { get; set; }
+
+    public string UniqueName { get; }
+
+    public IEnumerable<IComponent> GetAttachedComponents()
+    {
+        return this._publisher.Subscribers().OfType<IComponent>();
+    }
+
+    protected override void InnerUninitializedToInitialized()
+    {
+    }
+
+    protected override void InnerInitializedToUninitialized()
+    {
+    }
+
+    protected override void InnerInitializedToStarted()
+    {
+    }
+
+    protected override void InnerStartedToInitialized()
+    {
+    }
+
+    protected override void InnerAnyToInvalid()
+    {
+    }
+
+    protected override void InnerInvalidToUnitialized()
+    {
+    }
 }
