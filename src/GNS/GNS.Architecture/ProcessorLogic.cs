@@ -58,21 +58,6 @@ namespace GNS.Architecture
         }
 
         /// <summary>
-        /// Gets the appropriate delegate type for a given event type and return type.
-        /// </summary>
-        private Type GetDelegateType(Type eventType, Type returnType)
-        {
-            // If return type is IEvent, create a Func<TEvent, IEvent>
-            if (returnType == typeof(IEvent) || typeof(IEvent).IsAssignableFrom(returnType))
-            {
-                return typeof(Func<,>).MakeGenericType(eventType, typeof(IEvent));
-            }
-
-            // Otherwise create an Action<TEvent>
-            return typeof(Action<>).MakeGenericType(eventType);
-        }
-
-        /// <summary>
         /// Creates a strongly-typed processor handler for the given event type and method
         /// </summary>
         private Func<IEvent, IEvent> CreateProcessorHandler<TEvent>(MethodInfo method) where TEvent : IEvent
