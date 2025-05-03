@@ -34,8 +34,7 @@ namespace GNS.Architecture
             var result = new List<IComponent>();
 
             // First add all root components
-            var runtimeContext = this.RuntimeContext;
-            foreach (var component in runtimeContext.Components.Where(c => c.IsRoot))
+            foreach (var component in RuntimeContext.Components.Where(c => c.IsRoot))
             {
                 if (!visited.Contains(component.UniqueName))
                 {
@@ -44,7 +43,7 @@ namespace GNS.Architecture
             }
 
             // Then add any components that weren't visited (in case of circular dependencies or orphaned components)
-            foreach (var component in runtimeContext.Components)
+            foreach (var component in RuntimeContext.Components)
             {
                 if (!visited.Contains(component.UniqueName))
                 {
