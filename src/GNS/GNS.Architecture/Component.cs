@@ -1,13 +1,23 @@
 ﻿namespace GNS.Architecture;
 
-public abstract class Component : StateDrivenEntity, IPublisher, IRecipient, IComponent
+public abstract class Component : IStateDrivenEntity, IPublisher, IRecipient, IComponent
 {
     private readonly Publisher _publisher;
+    private readonly StateDrivenEntityHelper _stateDrivenEntityHelper;
 
     public Component(string uniqueName)
     {
         UniqueName = uniqueName;
         _publisher = new Publisher(uniqueName);
+
+        _stateDrivenEntityHelper =
+            new StateDrivenEntityHelper
+            (innerUninitializedToInitialized: InnerUninitializedToInitialized,
+                innerInitializedToStarted: InnerInitializedToStarted,
+                innerStartedToInitialized: InnerStartedToInitialized,
+                innerInitializedToUninitialized: InnerInitializedToUninitialized,
+                innerAnyToInvalid: InnerAnyToInvalid,
+                innerInvalidToUninitialized: InnerInitializedToUninitialized);
     }
 
     public void Subscribe(IRecipient recipient, IRule rule)
@@ -58,27 +68,46 @@ public abstract class Component : StateDrivenEntity, IPublisher, IRecipient, ICo
         return this._publisher.Subscribers().OfType<IComponent>();
     }
 
-    protected override void InnerUninitializedToInitialized()
+    protected virtual void InnerUninitializedToInitialized()
     {
     }
 
-    protected override void InnerInitializedToUninitialized()
+    protected virtual void InnerInitializedToUninitialized()
     {
     }
 
-    protected override void InnerInitializedToStarted()
+    protected virtual void InnerInitializedToStarted()
     {
     }
 
-    protected override void InnerStartedToInitialized()
+    protected virtual void InnerStartedToInitialized()
     {
     }
 
-    protected override void InnerAnyToInvalid()
+    protected virtual void InnerAnyToInvalid()
     {
     }
 
-    protected override void InnerInvalidToUninitialized()
+    protected virtual void InnerInvalidToUninitialized()
     {
+    }
+
+    public State CurrentState => _stateDrivenEntityHelper.CurrentState;
+
+    public void TransformTo(State state)
+    {
+        _stateDrivenEntityHelper.TransformTo(state);
+    }
+
+    public event EventHandler<StateTransformEventArgs>? StateTransforming
+    {
+        add => _stateDrivenEntityHelper.StateTransforming += value;
+        remove => _stateDrivenEntityHelper.StateTransforming -= value;
+    }
+
+    public event EventHandler<StateTransformEventArgs>? StateTransformed
+    {
+        add => _stateDrivenEntityHelper.StateTransformed += value;
+        remove => _stateDrivenEntityHelper.StateTransformed -= value;
     }
 }
