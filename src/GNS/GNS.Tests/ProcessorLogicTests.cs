@@ -92,4 +92,80 @@ public class ProcessorLogicTests
             return new UnknownEvent();
         }
     }
+
+    [TestFixture]
+    public class ProcessorLogicValidationTests
+    {
+        [Test]
+        public void ThrowsIfProcessorMethodHasInvalidReturnType()
+        {
+            // Method returns int — invalid
+            Assert.Throws<InvalidOperationException>(() =>
+            {
+                var logic = new InvalidReturnTypeProcessorLogic("invalid-return");
+            });
+        }
+
+        [Test]
+        public void ThrowsIfProcessorMethodHasNoParameters()
+        {
+            // Method has 0 parameters — invalid
+            Assert.Throws<InvalidOperationException>(() =>
+            {
+                var logic = new NoParameterProcessorLogic("no-params");
+            });
+        }
+
+        [Test]
+        public void ThrowsIfProcessorMethodHasMultipleParameters()
+        {
+            // Method has 2 parameters — invalid
+            Assert.Throws<InvalidOperationException>(() =>
+            {
+                var logic = new MultipleParameterProcessorLogic("too-many-params");
+            });
+        }
+
+        [Test]
+        public void ThrowsIfProcessorMethodHasInvalidParameterType()
+        {
+            // Parameter is string — invalid
+            Assert.Throws<InvalidOperationException>(() =>
+            {
+                var logic = new InvalidParameterTypeProcessorLogic("invalid-param");
+            });
+        }
+    }
+
+    public class InvalidReturnTypeProcessorLogic : ProcessorLogic
+    {
+        public InvalidReturnTypeProcessorLogic(string name) : base(name) { }
+
+        [Processor]
+        private int InvalidReturn(IEvent e) => 42;
+    }
+
+    public class NoParameterProcessorLogic : ProcessorLogic
+    {
+        public NoParameterProcessorLogic(string name) : base(name) { }
+
+        [Processor]
+        private void NoParams() { }
+    }
+
+    public class MultipleParameterProcessorLogic : ProcessorLogic
+    {
+        public MultipleParameterProcessorLogic(string name) : base(name) { }
+
+        [Processor]
+        private void TooManyParams(IEvent e, IEvent e2) { }
+    }
+
+    public class InvalidParameterTypeProcessorLogic : ProcessorLogic
+    {
+        public InvalidParameterTypeProcessorLogic(string name) : base(name) { }
+
+        [Processor]
+        private void NotAnEvent(string input) { }
+    }
 }
