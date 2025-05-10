@@ -106,7 +106,7 @@ namespace GNS.Architecture.Tests
             _components.Add(componentB);
             _components.Add(componentC);
 
-            // Create a cycle: A -> B -> C -> A
+            // Create a cycle: A -> C -> B -> A
             componentA.Subscribe(componentB, Mock.Of<IRule>());
             componentB.Subscribe(componentC, Mock.Of<IRule>());
             componentC.Subscribe(componentA, Mock.Of<IRule>()); // This creates a cycle
@@ -135,7 +135,7 @@ namespace GNS.Architecture.Tests
             _components.Add(componentB);
             _components.Add(componentC);
 
-            // Create a cycle: A -> B -> C -> A with no root component
+            // Create a cycle: C -> A -> B -> C with no root component
             componentA.Subscribe(componentB, Mock.Of<IRule>());
             componentB.Subscribe(componentC, Mock.Of<IRule>());
             componentC.Subscribe(componentA, Mock.Of<IRule>()); // This creates a cycle
