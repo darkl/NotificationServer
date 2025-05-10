@@ -50,6 +50,12 @@ namespace GNS.Architecture
                         $"Method {method.Name} marked with [Processor] attribute must accept exactly one parameter of type IEvent or a derived type.");
                 }
 
+                if (method.ReturnType != typeof(void) && !typeof(IEvent).IsAssignableFrom(method.ReturnType))
+                {
+                    throw new InvalidOperationException(
+                        $"Method {method.Name} marked with [Processor] attribute must have return type IEvent or void.");
+                }
+
                 // Get the event type this processor handles
                 var eventType = parameters[0].ParameterType;
                 // Add to our handler map
