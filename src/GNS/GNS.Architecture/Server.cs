@@ -120,7 +120,7 @@ namespace GNS.Architecture
             }
         }
 
-        protected override void InnerInvalidToUnitialized()
+        protected override void InnerInvalidToUninitialized()
         {
             foreach (var component in _orderedByHierarchy)
             {

@@ -300,10 +300,10 @@ namespace GNS.Architecture.Tests
             base.InnerAnyToInvalid();
         }
 
-        protected override void InnerInvalidToUnitialized()
+        protected override void InnerInvalidToUninitialized()
         {
             _stateTransitions.Add(new StateTransition(UniqueName, State.Uninitialized));
-            base.InnerInvalidToUnitialized();
+            base.InnerInvalidToUninitialized();
         }
 
         protected override void Consume(EventGroup eventGroup)

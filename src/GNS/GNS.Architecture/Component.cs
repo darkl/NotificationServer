@@ -78,7 +78,7 @@ public abstract class Component : StateDrivenEntity, IPublisher, IRecipient, ICo
     {
     }
 
-    protected override void InnerInvalidToUnitialized()
+    protected override void InnerInvalidToUninitialized()
     {
     }
 }
