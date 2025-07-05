@@ -781,10 +781,13 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
 {
     private readonly Publisher _publisher;
     private readonly StateDrivenEntityHelper _stateDrivenEntityHelper;
-    private readonly ActionBlock<Notification> _notificationProcessor;
+    private ActionBlock<Notification> _notificationProcessor;
     private readonly ComponentCounters _counters;
     private readonly ILog _log;
     private readonly bool _useActionBlock;
+    private readonly int _numOfOwnThreads;
+    private readonly int _queueMaxSize;
+    private readonly ExecutionDataflowBlockOptions _dataflowOptions;
 
     protected Component(string uniqueName, int numOfOwnThreads, int queueMaxSize, ILog log = null,
         ExecutionDataflowBlockOptions dataflowOptions = null)
@@ -794,21 +797,12 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
         _counters = new ComponentCounters();
         _publisher = new Publisher(uniqueName);
         _useActionBlock = numOfOwnThreads > 0;
+        _numOfOwnThreads = numOfOwnThreads;
+        _queueMaxSize = queueMaxSize;
+        _dataflowOptions = dataflowOptions;
 
-        // Only create ActionBlock if we have threads to work with
-        if (_useActionBlock)
-        {
-            // Configure ActionBlock options
-            var options = dataflowOptions ?? new ExecutionDataflowBlockOptions
-            {
-                MaxDegreeOfParallelism = numOfOwnThreads, // Sequential processing by default
-                BoundedCapacity = queueMaxSize,     // Bounded queue to prevent memory issues
-                CancellationToken = CancellationToken.None
-            };
-
-            // Create ActionBlock for processing notifications
-            _notificationProcessor = new ActionBlock<Notification>(ProcessNotificationAsync, options);
-        }
+        // ActionBlock will now be created in InnerUninitializedToInitializedAsync
+        _notificationProcessor = null;
 
         _stateDrivenEntityHelper = new StateDrivenEntityHelper(
             innerUninitializedToInitialized: InnerUninitializedToInitializedAsync,
@@ -833,14 +827,16 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     protected ILog Log => _log;
 
     /// <summary>
-    /// Gets the current queue count in the ActionBlock (0 if not using ActionBlock)
+    /// Gets the current queue count in the ActionBlock (0 if not using ActionBlock or not initialized)
     /// </summary>
-    public int QueueCount => _useActionBlock ? _notificationProcessor.InputCount : 0;
+    public int QueueCount => _useActionBlock && _notificationProcessor != null ? _notificationProcessor.InputCount : 0;
 
     /// <summary>
     /// Gets whether the component is accepting new messages
     /// </summary>
-    public bool IsAcceptingMessages => _useActionBlock ? !_notificationProcessor.Completion.IsCompleted : true;
+    public bool IsAcceptingMessages => _useActionBlock && _notificationProcessor != null
+        ? !_notificationProcessor.Completion.IsCompleted
+        : CurrentState == State.Started;
     #endregion
 
     #region IComponent Implementation
@@ -904,10 +900,17 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
         if (notification == null)
             throw new ArgumentNullException(nameof(notification));
 
+        // Only accept notifications when in Started state
+        if (CurrentState != State.Started)
+        {
+            _log.Warn("Notification received while not in Started state (Current: {0})", CurrentState);
+            throw new InvalidOperationException($"Component is not in Started state (Current: {CurrentState})");
+        }
+
         _counters.IncrementNotificationReceived();
         _log.Info("Notification received with {0} events", notification.EventGroup.Count);
 
-        if (_useActionBlock)
+        if (_useActionBlock && _notificationProcessor != null)
         {
             // Post notification to ActionBlock for processing
             var posted = await _notificationProcessor.SendAsync(notification, cancellationToken);
@@ -1058,6 +1061,14 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     protected virtual Task InnerUninitializedToInitializedAsync(CancellationToken cancellationToken)
     {
         _log.Info("Initializing component");
+
+        // Create ActionBlock if needed
+        if (_useActionBlock)
+        {
+            CreateActionBlock();
+            _log.Info("ActionBlock created during initialization");
+        }
+
         return Task.CompletedTask;
     }
 
@@ -1065,8 +1076,8 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     {
         _log.Info("Uninitializing component");
 
-        // Complete ActionBlock and wait for pending notifications only if using ActionBlock
-        if (_useActionBlock)
+        // Complete and dispose ActionBlock if it exists
+        if (_useActionBlock && _notificationProcessor != null)
         {
             _notificationProcessor.Complete();
             try
@@ -1078,18 +1089,34 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
             {
                 _log.Error(ex, "Error completing ActionBlock");
             }
+            finally
+            {
+                _notificationProcessor = null;
+            }
         }
     }
 
     protected virtual Task InnerInitializedToStartedAsync(CancellationToken cancellationToken)
     {
         _log.Info("Starting component");
+
+        // ActionBlock is already created and ready to process messages
+        // There's no explicit "start" method - it begins processing as soon as messages are posted
+        if (_useActionBlock && _notificationProcessor != null)
+        {
+            _log.Info("ActionBlock ready to process notifications");
+        }
+
         return Task.CompletedTask;
     }
 
     protected virtual Task InnerStartedToInitializedAsync(CancellationToken cancellationToken)
     {
         _log.Info("Stopping component");
+
+        // ActionBlock continues to exist but component won't accept new notifications
+        // due to state check in HandleNotificationAsync
+
         return Task.CompletedTask;
     }
 
@@ -1097,8 +1124,8 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     {
         _log.Warn("Component transitioning to Invalid state");
 
-        // Complete ActionBlock when going invalid only if using ActionBlock
-        if (_useActionBlock)
+        // Complete ActionBlock when going invalid
+        if (_useActionBlock && _notificationProcessor != null)
         {
             _notificationProcessor.Complete();
         }
@@ -1108,7 +1135,33 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     protected virtual Task InnerInvalidToUninitializedAsync(CancellationToken cancellationToken)
     {
         _log.Info("Recovering from Invalid state");
+
+        // Clean up the ActionBlock reference since it was completed in InnerAnyToInvalidAsync
+        if (_useActionBlock)
+        {
+            _notificationProcessor = null;
+        }
+
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Creates a new ActionBlock with the configured options
+    /// </summary>
+    private void CreateActionBlock()
+    {
+        if (!_useActionBlock) return;
+
+        // Configure ActionBlock options
+        var options = _dataflowOptions ?? new ExecutionDataflowBlockOptions
+        {
+            MaxDegreeOfParallelism = _numOfOwnThreads,
+            BoundedCapacity = _queueMaxSize,
+            CancellationToken = CancellationToken.None
+        };
+
+        // Create ActionBlock for processing notifications
+        _notificationProcessor = new ActionBlock<Notification>(ProcessNotificationAsync, options);
     }
     #endregion
 
@@ -1126,6 +1179,7 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
                $"State Transitions: {_counters.StateTransitionCount}, " +
                $"Queue Count: {QueueCount}, " +
                $"ActionBlock Mode: {_useActionBlock}, " +
+               $"ActionBlock Created: {_notificationProcessor != null}, " +
                $"Current State: {CurrentState}";
     }
 
@@ -1134,9 +1188,9 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     /// </summary>
     public async Task WaitForCompletionAsync(TimeSpan timeout = default)
     {
-        if (!_useActionBlock)
+        if (!_useActionBlock || _notificationProcessor == null)
         {
-            _log.Info("No ActionBlock to wait for - operating in direct mode");
+            _log.Info("No ActionBlock to wait for - operating in direct mode or not initialized");
             return;
         }
 
@@ -1165,8 +1219,8 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
         {
             _log.Info("Disposing component");
 
-            // Complete and dispose ActionBlock only if using ActionBlock
-            if (_useActionBlock)
+            // Complete and dispose ActionBlock if it exists
+            if (_useActionBlock && _notificationProcessor != null)
             {
                 _notificationProcessor.Complete();
                 try
@@ -1191,6 +1245,7 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     }
     #endregion
 }
+
 /// <summary>
 /// Helper class that encapsulates state-driven entity behavior using composition.
 /// This allows the async state management to be reused across different entity types.

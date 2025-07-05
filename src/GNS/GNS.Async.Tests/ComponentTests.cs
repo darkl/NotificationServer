@@ -57,6 +57,8 @@ public class ComponentTests
         var eventGroup = new EventGroup(){ new DummyEvent() };
         var notification = new Notification(eventGroup, new DummyRule());
 
+        await component.TransformToAsync(State.Started);
+
         await component.HandleNotificationAsync(notification);
         await Task.Delay(300);
         Assert.AreEqual(eventGroup, component.ConsumedEvents);
@@ -76,6 +78,8 @@ public class ComponentTests
         var eventGroup = new EventGroup(){ new DummyEvent() };
         var notification = new Notification(eventGroup, new DummyRule());
         var cancellationToken = new CancellationToken();
+
+        await component.TransformToAsync(State.Started);
 
         await component.HandleNotificationAsync(notification, cancellationToken);
         await Task.Delay(300);
