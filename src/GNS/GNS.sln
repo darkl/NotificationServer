@@ -7,6 +7,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GNS.Architecture", "GNS.Arc
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GNS.Tests", "GNS.Tests\GNS.Tests.csproj", "{BAD24C9B-15BD-4BAD-86B0-C8604533A131}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GNS.Async", "GNS.Async\GNS.Async.csproj", "{5166914B-59C4-4162-9940-6C2E586474C2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GNS.Async.Tests", "GNS.Async.Tests\GNS.Async.Tests.csproj", "{C1FEDCA2-00AC-4BFC-9412-9566638A66C8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +25,14 @@ Global
 		{BAD24C9B-15BD-4BAD-86B0-C8604533A131}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{BAD24C9B-15BD-4BAD-86B0-C8604533A131}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{BAD24C9B-15BD-4BAD-86B0-C8604533A131}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5166914B-59C4-4162-9940-6C2E586474C2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5166914B-59C4-4162-9940-6C2E586474C2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5166914B-59C4-4162-9940-6C2E586474C2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5166914B-59C4-4162-9940-6C2E586474C2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C1FEDCA2-00AC-4BFC-9412-9566638A66C8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C1FEDCA2-00AC-4BFC-9412-9566638A66C8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C1FEDCA2-00AC-4BFC-9412-9566638A66C8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C1FEDCA2-00AC-4BFC-9412-9566638A66C8}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
