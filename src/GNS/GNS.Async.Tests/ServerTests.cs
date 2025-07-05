@@ -260,7 +260,7 @@ public class MockComponent : Component
 {
     private readonly List<StateTransition> _stateTransitions;
 
-    public MockComponent(string name, List<StateTransition> stateTransitions) : base(name)
+    public MockComponent(string name, List<StateTransition> stateTransitions) : base(name, 1, 1000)
     {
         _stateTransitions = stateTransitions;
     }

@@ -58,7 +58,7 @@ public class ComponentTests
         var notification = new Notification(eventGroup, new DummyRule());
 
         await component.HandleNotificationAsync(notification);
-
+        await Task.Delay(300);
         Assert.AreEqual(eventGroup, component.ConsumedEvents);
     }
 
@@ -78,7 +78,8 @@ public class ComponentTests
         var cancellationToken = new CancellationToken();
 
         await component.HandleNotificationAsync(notification, cancellationToken);
-
+        await Task.Delay(300);
+        
         Assert.AreEqual(eventGroup, component.ConsumedEvents);
         Assert.AreEqual(cancellationToken, component.LastCancellationToken);
     }
@@ -89,7 +90,7 @@ public class TestComponent : Component
     public EventGroup ConsumedEvents { get; private set; }
     public CancellationToken LastCancellationToken { get; private set; }
 
-    public TestComponent(string name) : base(name) { }
+    public TestComponent(string name) : base(name, 1, 1000) { }
 
     protected override Task ConsumeAsync(EventGroup eventGroup, CancellationToken cancellationToken)
     {

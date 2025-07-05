@@ -1,5 +1,6 @@
 ﻿using System.Collections.Concurrent;
 using System.Reflection;
+using System.Threading.Tasks.Dataflow;
 
 namespace GNS.Async;
 
@@ -204,7 +205,7 @@ public class EventGroup : List<IEvent>, IEvent
 
 public abstract class Logic : Component
 {
-    protected Logic(string uniqueName) : base(uniqueName)
+    protected Logic(string uniqueName) : base(uniqueName, 1, 1000)
     {
     }
 
@@ -672,19 +673,143 @@ internal class RuntimeContext : IRuntimeContext
 }
 
 /// <summary>
-/// Modern Component implementation that integrates the 2009 composition pattern
-/// with the current async/await architecture. Uses composition for Publisher
-/// and StateDrivenEntityHelper while maintaining async patterns.
+/// Logging interface for the framework
+/// </summary>
+public interface ILog
+{
+    void Info(string message);
+    void Info(string message, params object[] args);
+    void Warn(string message);
+    void Warn(string message, params object[] args);
+    void Error(string message);
+    void Error(string message, params object[] args);
+    void Error(Exception exception, string message);
+    void Error(Exception exception, string message, params object[] args);
+}
+
+/// <summary>
+/// Default console-based logging implementation
+/// </summary>
+public class ConsoleLog : ILog
+{
+    private readonly string _componentName;
+
+    public ConsoleLog(string componentName = null)
+    {
+        _componentName = componentName ?? "Unknown";
+    }
+
+    public void Info(string message)
+    {
+        Console.WriteLine($"[INFO] [{_componentName}] {message}");
+    }
+
+    public void Info(string message, params object[] args)
+    {
+        Console.WriteLine($"[INFO] [{_componentName}] {string.Format(message, args)}");
+    }
+
+    public void Warn(string message)
+    {
+        Console.WriteLine($"[WARN] [{_componentName}] {message}");
+    }
+
+    public void Warn(string message, params object[] args)
+    {
+        Console.WriteLine($"[WARN] [{_componentName}] {string.Format(message, args)}");
+    }
+
+    public void Error(string message)
+    {
+        Console.WriteLine($"[ERROR] [{_componentName}] {message}");
+    }
+
+    public void Error(string message, params object[] args)
+    {
+        Console.WriteLine($"[ERROR] [{_componentName}] {string.Format(message, args)}");
+    }
+
+    public void Error(Exception exception, string message)
+    {
+        Console.WriteLine($"[ERROR] [{_componentName}] {message}: {exception}");
+    }
+
+    public void Error(Exception exception, string message, params object[] args)
+    {
+        Console.WriteLine($"[ERROR] [{_componentName}] {string.Format(message, args)}: {exception}");
+    }
+}
+
+/// <summary>
+/// Performance counters for component monitoring
+/// </summary>
+public class ComponentCounters
+{
+    private long _eventProcessedCount;
+    private long _eventErrorCount;
+    private long _notificationReceivedCount;
+    private long _notificationProcessedCount;
+    private long _stateTransitionCount;
+
+    public long EventProcessedCount => _eventProcessedCount;
+    public long EventErrorCount => _eventErrorCount;
+    public long NotificationReceivedCount => _notificationReceivedCount;
+    public long NotificationProcessedCount => _notificationProcessedCount;
+    public long StateTransitionCount => _stateTransitionCount;
+
+    internal void IncrementEventProcessed() => Interlocked.Increment(ref _eventProcessedCount);
+    internal void IncrementEventError() => Interlocked.Increment(ref _eventErrorCount);
+    internal void IncrementNotificationReceived() => Interlocked.Increment(ref _notificationReceivedCount);
+    internal void IncrementNotificationProcessed() => Interlocked.Increment(ref _notificationProcessedCount);
+    internal void IncrementStateTransition() => Interlocked.Increment(ref _stateTransitionCount);
+
+    public void Reset()
+    {
+        Interlocked.Exchange(ref _eventProcessedCount, 0);
+        Interlocked.Exchange(ref _eventErrorCount, 0);
+        Interlocked.Exchange(ref _notificationReceivedCount, 0);
+        Interlocked.Exchange(ref _notificationProcessedCount, 0);
+        Interlocked.Exchange(ref _stateTransitionCount, 0);
+    }
+}
+
+/// <summary>
+/// Enhanced Component implementation with optional ActionBlock for message dispatching,
+/// logging support, and performance counters.
 /// </summary>
 public abstract class Component : IComponent, IRecipient, IPublisher, IStateDrivenEntity
 {
     private readonly Publisher _publisher;
     private readonly StateDrivenEntityHelper _stateDrivenEntityHelper;
+    private readonly ActionBlock<Notification> _notificationProcessor;
+    private readonly ComponentCounters _counters;
+    private readonly ILog _log;
+    private readonly bool _useActionBlock;
 
-    protected Component(string uniqueName)
+    protected Component(string uniqueName, int numOfOwnThreads, int queueMaxSize, ILog log = null,
+        ExecutionDataflowBlockOptions dataflowOptions = null)
     {
         UniqueName = uniqueName ?? throw new ArgumentNullException(nameof(uniqueName));
+        _log = log ?? new ConsoleLog(uniqueName);
+        _counters = new ComponentCounters();
         _publisher = new Publisher(uniqueName);
+        _useActionBlock = numOfOwnThreads > 0;
+
+        // Only create ActionBlock if we have threads to work with
+        if (_useActionBlock)
+        {
+            // Configure ActionBlock options
+            var options = dataflowOptions ?? new ExecutionDataflowBlockOptions
+            {
+                MaxDegreeOfParallelism = numOfOwnThreads, // Sequential processing by default
+                BoundedCapacity = queueMaxSize,     // Bounded queue to prevent memory issues
+                CancellationToken = CancellationToken.None
+            };
+
+            // Create ActionBlock for processing notifications
+            _notificationProcessor = new ActionBlock<Notification>(ProcessNotificationAsync, options);
+        }
+
         _stateDrivenEntityHelper = new StateDrivenEntityHelper(
             innerUninitializedToInitialized: InnerUninitializedToInitializedAsync,
             innerInitializedToUninitialized: InnerInitializedToUninitializedAsync,
@@ -692,13 +817,33 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
             innerStartedToInitialized: InnerStartedToInitializedAsync,
             innerAnyToInvalid: InnerAnyToInvalidAsync,
             innerInvalidToUninitialized: InnerInvalidToUninitializedAsync);
+
+        // Subscribe to state change events for logging and counting
+        _stateDrivenEntityHelper.StateTransforming += OnStateTransforming;
+        _stateDrivenEntityHelper.StateTransformed += OnStateTransformed;
+
+        _log.Info("Component created (ActionBlock mode: {0})", _useActionBlock);
     }
 
-    #region IComponent Implementation
+    #region Properties
     public string UniqueName { get; }
     public IRuntimeContext RuntimeContext { get; set; }
     public virtual bool IsRoot { get; set; }
+    public ComponentCounters Counters => _counters;
+    protected ILog Log => _log;
 
+    /// <summary>
+    /// Gets the current queue count in the ActionBlock (0 if not using ActionBlock)
+    /// </summary>
+    public int QueueCount => _useActionBlock ? _notificationProcessor.InputCount : 0;
+
+    /// <summary>
+    /// Gets whether the component is accepting new messages
+    /// </summary>
+    public bool IsAcceptingMessages => _useActionBlock ? !_notificationProcessor.Completion.IsCompleted : true;
+    #endregion
+
+    #region IComponent Implementation
     public virtual IEnumerable<IComponent> GetAttachedComponents()
     {
         return _publisher.Subscribers().OfType<IComponent>();
@@ -712,6 +857,7 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
         if (rule == null) throw new ArgumentNullException(nameof(rule));
 
         _publisher.Subscribe(recipient, rule);
+        _log.Info("Subscribed recipient: {0}", recipient.GetType().Name);
     }
 
     public void Unsubscribe(IRecipient recipient, IRule rule)
@@ -720,6 +866,7 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
         if (rule == null) throw new ArgumentNullException(nameof(rule));
 
         _publisher.Unsubscribe(recipient, rule);
+        _log.Info("Unsubscribed recipient: {0}", recipient.GetType().Name);
     }
 
     public void Unsubscribe(IRecipient recipient)
@@ -727,11 +874,11 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
         if (recipient == null) throw new ArgumentNullException(nameof(recipient));
 
         _publisher.Unsubscribe(recipient);
+        _log.Info("Unsubscribed all rules for recipient: {0}", recipient.GetType().Name);
     }
 
     /// <summary>
     /// Gets or sets the maximum size of event groups that will be sent to recipients.
-    /// If set to a positive value, larger event groups will be split into smaller chunks.
     /// </summary>
     public int EventGroupMaxSize
     {
@@ -746,7 +893,7 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     {
         if (eventGroup == null || eventGroup.Count == 0) return Task.CompletedTask;
 
-        // Convert sync Publisher.Publish to async
+        _log.Info("Publishing event group with {0} events", eventGroup.Count);
         return _publisher.PublishAsync(eventGroup, cancellationToken);
     }
     #endregion
@@ -757,13 +904,104 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
         if (notification == null)
             throw new ArgumentNullException(nameof(notification));
 
+        _counters.IncrementNotificationReceived();
+        _log.Info("Notification received with {0} events", notification.EventGroup.Count);
+
+        if (_useActionBlock)
+        {
+            // Post notification to ActionBlock for processing
+            var posted = await _notificationProcessor.SendAsync(notification, cancellationToken);
+
+            if (!posted)
+            {
+                _log.Warn("Failed to queue notification - ActionBlock may be shutting down");
+                throw new InvalidOperationException("Component is not accepting new notifications");
+            }
+        }
+        else
+        {
+            // Process notification directly without ActionBlock
+            await ProcessNotificationDirectlyAsync(notification, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Internal method called by ActionBlock to process notifications
+    /// </summary>
+    private async Task ProcessNotificationAsync(Notification notification)
+    {
         try
         {
-            await ConsumeAsync(notification.EventGroup, cancellationToken);
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+            // Process each event in the notification
+            foreach (var evt in notification.EventGroup)
+            {
+                _counters.IncrementEventProcessed();
+            }
+
+            // Call the abstract ConsumeAsync method
+            await ConsumeAsync(notification.EventGroup, CancellationToken.None);
+
+            _counters.IncrementNotificationProcessed();
+            stopwatch.Stop();
+
+            _log.Info("Processed notification with {0} events in {1}ms",
+                     notification.EventGroup.Count, stopwatch.ElapsedMilliseconds);
         }
         catch (Exception ex)
         {
-            await HandleNotificationErrorAsync(ex, notification, cancellationToken);
+            _counters.IncrementEventError();
+            _log.Error(ex, "Error processing notification");
+
+            try
+            {
+                await HandleNotificationErrorAsync(ex, notification, CancellationToken.None);
+            }
+            catch (Exception handlerEx)
+            {
+                _log.Error(handlerEx, "Error in notification error handler");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Direct processing method used when not using ActionBlock
+    /// </summary>
+    private async Task ProcessNotificationDirectlyAsync(Notification notification, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+            // Process each event in the notification
+            foreach (var evt in notification.EventGroup)
+            {
+                _counters.IncrementEventProcessed();
+            }
+
+            // Call the abstract ConsumeAsync method
+            await ConsumeAsync(notification.EventGroup, cancellationToken);
+
+            _counters.IncrementNotificationProcessed();
+            stopwatch.Stop();
+
+            _log.Info("Processed notification with {0} events in {1}ms",
+                     notification.EventGroup.Count, stopwatch.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            _counters.IncrementEventError();
+            _log.Error(ex, "Error processing notification");
+
+            try
+            {
+                await HandleNotificationErrorAsync(ex, notification, cancellationToken);
+            }
+            catch (Exception handlerEx)
+            {
+                _log.Error(handlerEx, "Error in notification error handler");
+            }
         }
     }
 
@@ -774,11 +1012,10 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
 
     /// <summary>
     /// Override this method to handle errors that occur during notification processing.
-    /// Default implementation does nothing - components can implement custom error handling.
     /// </summary>
     protected virtual Task HandleNotificationErrorAsync(Exception exception, Notification notification, CancellationToken cancellationToken)
     {
-        // Default implementation - could log, transform to Invalid state, etc.
+        _log.Error(exception, "Unhandled error in ConsumeAsync");
         return Task.CompletedTask;
     }
     #endregion
@@ -804,59 +1041,120 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     }
     #endregion
 
-    #region State Transition Methods (Override in derived classes)
-    /// <summary>
-    /// Called when transitioning from Uninitialized to Initialized state.
-    /// Override to implement component initialization logic.
-    /// </summary>
+    #region State Event Handlers
+    private void OnStateTransforming(object sender, StateTransformEventArgs e)
+    {
+        _log.Info("State transforming from {0} to {1}", e.PreviousState, e.NextState);
+    }
+
+    private void OnStateTransformed(object sender, StateTransformEventArgs e)
+    {
+        _counters.IncrementStateTransition();
+        _log.Info("State transformed from {0} to {1}", e.PreviousState, e.NextState);
+    }
+    #endregion
+
+    #region State Transition Methods
     protected virtual Task InnerUninitializedToInitializedAsync(CancellationToken cancellationToken)
     {
+        _log.Info("Initializing component");
         return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Called when transitioning from Initialized to Uninitialized state.
-    /// Override to implement component cleanup logic.
-    /// </summary>
-    protected virtual Task InnerInitializedToUninitializedAsync(CancellationToken cancellationToken)
+    protected virtual async Task InnerInitializedToUninitializedAsync(CancellationToken cancellationToken)
     {
-        return Task.CompletedTask;
+        _log.Info("Uninitializing component");
+
+        // Complete ActionBlock and wait for pending notifications only if using ActionBlock
+        if (_useActionBlock)
+        {
+            _notificationProcessor.Complete();
+            try
+            {
+                await _notificationProcessor.Completion;
+                _log.Info("ActionBlock completed successfully");
+            }
+            catch (Exception ex)
+            {
+                _log.Error(ex, "Error completing ActionBlock");
+            }
+        }
     }
 
-    /// <summary>
-    /// Called when transitioning from Initialized to Started state.
-    /// Override to implement component startup logic.
-    /// </summary>
     protected virtual Task InnerInitializedToStartedAsync(CancellationToken cancellationToken)
     {
+        _log.Info("Starting component");
         return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Called when transitioning from Started to Initialized state.
-    /// Override to implement component shutdown logic.
-    /// </summary>
     protected virtual Task InnerStartedToInitializedAsync(CancellationToken cancellationToken)
     {
+        _log.Info("Stopping component");
         return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Called when transitioning to Invalid state from any other state.
-    /// Override to implement component invalidation logic.
-    /// </summary>
     protected virtual Task InnerAnyToInvalidAsync(CancellationToken cancellationToken)
     {
+        _log.Warn("Component transitioning to Invalid state");
+
+        // Complete ActionBlock when going invalid only if using ActionBlock
+        if (_useActionBlock)
+        {
+            _notificationProcessor.Complete();
+        }
         return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Called when transitioning from Invalid to Uninitialized state.
-    /// Override to implement component recovery logic.
-    /// </summary>
     protected virtual Task InnerInvalidToUninitializedAsync(CancellationToken cancellationToken)
     {
+        _log.Info("Recovering from Invalid state");
         return Task.CompletedTask;
+    }
+    #endregion
+
+    #region Utility Methods
+    /// <summary>
+    /// Gets a summary of component performance metrics
+    /// </summary>
+    public string GetMetricsSummary()
+    {
+        return $"Component: {UniqueName}, " +
+               $"Events Processed: {_counters.EventProcessedCount}, " +
+               $"Events Errors: {_counters.EventErrorCount}, " +
+               $"Notifications Received: {_counters.NotificationReceivedCount}, " +
+               $"Notifications Processed: {_counters.NotificationProcessedCount}, " +
+               $"State Transitions: {_counters.StateTransitionCount}, " +
+               $"Queue Count: {QueueCount}, " +
+               $"ActionBlock Mode: {_useActionBlock}, " +
+               $"Current State: {CurrentState}";
+    }
+
+    /// <summary>
+    /// Waits for all pending notifications to be processed
+    /// </summary>
+    public async Task WaitForCompletionAsync(TimeSpan timeout = default)
+    {
+        if (!_useActionBlock)
+        {
+            _log.Info("No ActionBlock to wait for - operating in direct mode");
+            return;
+        }
+
+        if (timeout == default) timeout = TimeSpan.FromSeconds(30);
+
+        _notificationProcessor.Complete();
+
+        using var cts = new CancellationTokenSource(timeout);
+        try
+        {
+            await _notificationProcessor.Completion.WaitAsync(cts.Token);
+            _log.Info("All notifications processed successfully");
+        }
+        catch (OperationCanceledException)
+        {
+            _log.Warn("Timeout waiting for notifications to complete");
+            throw;
+        }
     }
     #endregion
 
@@ -865,8 +1163,24 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     {
         if (disposing)
         {
+            _log.Info("Disposing component");
+
+            // Complete and dispose ActionBlock only if using ActionBlock
+            if (_useActionBlock)
+            {
+                _notificationProcessor.Complete();
+                try
+                {
+                    _notificationProcessor.Completion.Wait(TimeSpan.FromSeconds(5));
+                }
+                catch (Exception ex)
+                {
+                    _log.Error(ex, "Error waiting for ActionBlock completion during dispose");
+                }
+            }
+
             _stateDrivenEntityHelper?.Dispose();
-            // Publisher doesn't implement IDisposable in the provided code
+            _log.Info("Component disposed");
         }
     }
 
@@ -877,7 +1191,6 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     }
     #endregion
 }
-
 /// <summary>
 /// Helper class that encapsulates state-driven entity behavior using composition.
 /// This allows the async state management to be reused across different entity types.

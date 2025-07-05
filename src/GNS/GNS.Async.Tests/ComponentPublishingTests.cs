@@ -10,7 +10,7 @@ public class ComponentPublishingTests
     {
         public List<EventGroup> ConsumedEventGroups { get; } = new List<EventGroup>();
 
-        public TestComponent(string name) : base(name) { }
+        public TestComponent(string name) : base(name, 1, 1000) { }
 
         protected override Task ConsumeAsync(EventGroup eventGroup, CancellationToken cancellationToken)
         {
