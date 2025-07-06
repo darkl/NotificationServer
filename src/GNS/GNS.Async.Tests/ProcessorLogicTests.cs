@@ -37,7 +37,7 @@ public class ProcessorLogicTests
         public bool VoidHandlerCalled;
         public bool AsyncHandlerCalled;
 
-        public TestProcessorLogic() : base("TestLogic") { }
+        public TestProcessorLogic() : base("TestLogic", DispatcherFactory.CreateSynchronous()) { }
 
         [Processor]
         private void HandleSampleEvent(SampleEvent e)
@@ -257,7 +257,7 @@ public class ProcessorLogicTests
 
     public class InvalidReturnTypeProcessorLogic : ProcessorLogic
     {
-        public InvalidReturnTypeProcessorLogic(string name) : base(name) { }
+        public InvalidReturnTypeProcessorLogic(string name) : base(name, DispatcherFactory.CreateSynchronous()) { }
 
         [Processor]
         private int InvalidReturn(IEvent e) => 42;
@@ -265,7 +265,7 @@ public class ProcessorLogicTests
 
     public class NoParameterProcessorLogic : ProcessorLogic
     {
-        public NoParameterProcessorLogic(string name) : base(name) { }
+        public NoParameterProcessorLogic(string name) : base(name, DispatcherFactory.CreateSynchronous()) { }
 
         [Processor]
         private void NoParams() { }
@@ -273,7 +273,7 @@ public class ProcessorLogicTests
 
     public class TooManyParametersProcessorLogic : ProcessorLogic
     {
-        public TooManyParametersProcessorLogic(string name) : base(name) { }
+        public TooManyParametersProcessorLogic(string name) : base(name, DispatcherFactory.CreateSynchronous()) { }
 
         [Processor]
         private void TooManyParams(IEvent e, CancellationToken token, string extra) { }
@@ -281,7 +281,7 @@ public class ProcessorLogicTests
 
     public class InvalidParameterTypeProcessorLogic : ProcessorLogic
     {
-        public InvalidParameterTypeProcessorLogic(string name) : base(name) { }
+        public InvalidParameterTypeProcessorLogic(string name) : base(name, DispatcherFactory.CreateSynchronous()) { }
 
         [Processor]
         private void NotAnEvent(string input) { }
@@ -289,7 +289,7 @@ public class ProcessorLogicTests
 
     public class InvalidSecondParameterTypeProcessorLogic : ProcessorLogic
     {
-        public InvalidSecondParameterTypeProcessorLogic(string name) : base(name) { }
+        public InvalidSecondParameterTypeProcessorLogic(string name) : base(name, DispatcherFactory.CreateSynchronous()) { }
 
         [Processor]
         private void InvalidSecondParam(IEvent e, string notACancellationToken) { }
@@ -297,7 +297,7 @@ public class ProcessorLogicTests
 
     public class InvalidAsyncReturnTypeProcessorLogic : ProcessorLogic
     {
-        public InvalidAsyncReturnTypeProcessorLogic(string name) : base(name) { }
+        public InvalidAsyncReturnTypeProcessorLogic(string name) : base(name, DispatcherFactory.CreateSynchronous()) { }
 
         [Processor]
         private async Task<string> InvalidAsyncReturn(IEvent e) => await Task.FromResult("invalid");
@@ -305,7 +305,7 @@ public class ProcessorLogicTests
 
     public class MultipleProcessorsForSameEventProcessorLogic : ProcessorLogic
     {
-        public MultipleProcessorsForSameEventProcessorLogic(string name) : base(name) { }
+        public MultipleProcessorsForSameEventProcessorLogic(string name) : base(name, DispatcherFactory.CreateSynchronous()) { }
 
         [Processor]
         private void FirstProcessor(SampleEvent e) { }
@@ -316,7 +316,7 @@ public class ProcessorLogicTests
 
     public class ValidProcessorMethodsLogic : ProcessorLogic
     {
-        public ValidProcessorMethodsLogic(string name) : base(name) { }
+        public ValidProcessorMethodsLogic(string name) : base(name, DispatcherFactory.CreateSynchronous()) { }
 
         [Processor]
         private void VoidSync(SampleEvent e) { }

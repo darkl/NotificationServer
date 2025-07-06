@@ -94,7 +94,7 @@ public class TestComponent : Component
     public EventGroup ConsumedEvents { get; private set; }
     public CancellationToken LastCancellationToken { get; private set; }
 
-    public TestComponent(string name) : base(name, 1, 1000) { }
+    public TestComponent(string name) : base(name, DispatcherFactory.CreateSynchronous()) { }
 
     protected override Task ConsumeAsync(EventGroup eventGroup, CancellationToken cancellationToken)
     {

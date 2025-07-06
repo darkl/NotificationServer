@@ -94,26 +94,66 @@ public class StateTransformEventArgs : EventArgs
 
 public abstract class StateDrivenEntity : IStateDrivenEntity
 {
-    private State _currentState = State.Uninitialized;
     private readonly SemaphoreSlim _stateLock = new(1, 1);
 
-    public State CurrentState => _currentState;
+    public State CurrentState { get; private set; } = State.Uninitialized;
+
+    public event EventHandler<StateTransformEventArgs> StateTransforming;
+    public event EventHandler<StateTransformEventArgs> StateTransformed;
+
+    protected abstract Task InnerUninitializedToInitializedAsync(CancellationToken cancellationToken = default);
+    protected abstract Task InnerInitializedToUninitializedAsync(CancellationToken cancellationToken = default);
+    protected abstract Task InnerInitializedToStartedAsync(CancellationToken cancellationToken = default);
+    protected abstract Task InnerStartedToInitializedAsync(CancellationToken cancellationToken = default);
+    protected abstract Task InnerAnyToInvalidAsync(CancellationToken cancellationToken = default);
+    protected abstract Task InnerInvalidToUninitializedAsync(CancellationToken cancellationToken = default);
 
     public virtual async Task TransformToAsync(State state, CancellationToken cancellationToken = default)
     {
         await _stateLock.WaitAsync(cancellationToken);
         try
         {
-            var previousState = _currentState;
-            if (previousState == state) return;
+            if (state == CurrentState)
+                return;
 
-            var args = new StateTransformEventArgs { PreviousState = previousState, NextState = state };
-            StateTransforming?.Invoke(this, args);
+            switch (CurrentState, state)
+            {
+                case (not State.Invalid, not State.Invalid):
+                    await ValidStateTransformAsync(state, cancellationToken);
+                    break;
+                case (not State.Invalid, State.Invalid):
+                    var invalidArgs = new StateTransformEventArgs
+                    {
+                        PreviousState = CurrentState,
+                        NextState = State.Invalid
+                    };
+                    OnStateTransforming(invalidArgs);
+                    await InnerAnyToInvalidAsync(cancellationToken);
+                    CurrentState = State.Invalid;
+                    OnStateTransformed(invalidArgs);
+                    break;
+                case (State.Invalid, not State.Invalid):
+                    var uninitArgs = new StateTransformEventArgs
+                    {
+                        PreviousState = State.Invalid,
+                        NextState = State.Uninitialized
+                    };
+                    OnStateTransforming(uninitArgs);
+                    await InnerInvalidToUninitializedAsync(cancellationToken);
+                    CurrentState = State.Uninitialized;
+                    OnStateTransformed(uninitArgs);
 
-            await ExecuteStateTransitionAsync(previousState, state, cancellationToken);
-
-            _currentState = state;
-            StateTransformed?.Invoke(this, args);
+                    // Continue with the requested state transition
+                    if (state != State.Uninitialized)
+                        await ValidStateTransformAsync(state, cancellationToken);
+                    break;
+            }
+        }
+        catch (Exception e)
+        {
+            // On exception, transition to Invalid state if not already there
+            if (CurrentState != State.Invalid)
+                await TransformToAsync(State.Invalid, cancellationToken);
         }
         finally
         {
@@ -121,40 +161,68 @@ public abstract class StateDrivenEntity : IStateDrivenEntity
         }
     }
 
-    private async Task ExecuteStateTransitionAsync(State from, State to, CancellationToken cancellationToken)
+    private async Task ValidStateTransformAsync(State state, CancellationToken cancellationToken)
     {
-        switch ((from, to))
+        switch (CurrentState, state)
         {
-            case (State.Uninitialized, State.Initialized):
-                await InnerUninitializedToInitializedAsync(cancellationToken);
+            case (State.Started, State.Uninitialized):
+                // Go through Initialized when transitioning from Started to Uninitialized
+                await SingleStateTransformAsync(State.Initialized, cancellationToken);
+                await SingleStateTransformAsync(State.Uninitialized, cancellationToken);
                 break;
-            case (State.Initialized, State.Uninitialized):
-                await InnerInitializedToUninitializedAsync(cancellationToken);
+            case (State.Uninitialized, State.Started):
+                // Go through Initialized when transitioning from Uninitialized to Started
+                await SingleStateTransformAsync(State.Initialized, cancellationToken);
+                await SingleStateTransformAsync(State.Started, cancellationToken);
                 break;
-            case (State.Initialized, State.Started):
-                await InnerInitializedToStartedAsync(cancellationToken);
-                break;
-            case (State.Started, State.Initialized):
-                await InnerStartedToInitializedAsync(cancellationToken);
-                break;
-            case (_, State.Invalid):
-                await InnerAnyToInvalidAsync(cancellationToken);
-                break;
-            case (State.Invalid, State.Uninitialized):
-                await InnerInvalidToUninitializedAsync(cancellationToken);
+            default:
+                await SingleStateTransformAsync(state, cancellationToken);
                 break;
         }
     }
 
-    public event EventHandler<StateTransformEventArgs> StateTransforming;
-    public event EventHandler<StateTransformEventArgs> StateTransformed;
+    private async Task SingleStateTransformAsync(State state, CancellationToken cancellationToken)
+    {
+        var args = new StateTransformEventArgs
+        {
+            PreviousState = CurrentState,
+            NextState = state
+        };
 
-    protected abstract Task InnerUninitializedToInitializedAsync(CancellationToken cancellationToken);
-    protected abstract Task InnerInitializedToUninitializedAsync(CancellationToken cancellationToken);
-    protected abstract Task InnerInitializedToStartedAsync(CancellationToken cancellationToken);
-    protected abstract Task InnerStartedToInitializedAsync(CancellationToken cancellationToken);
-    protected abstract Task InnerAnyToInvalidAsync(CancellationToken cancellationToken);
-    protected abstract Task InnerInvalidToUninitializedAsync(CancellationToken cancellationToken);
+        OnStateTransforming(args);
+
+        switch (CurrentState, state)
+        {
+            case (State.Uninitialized, State.Initialized):
+                await InnerUninitializedToInitializedAsync(cancellationToken);
+                CurrentState = State.Initialized;
+                break;
+            case (State.Initialized, State.Started):
+                await InnerInitializedToStartedAsync(cancellationToken);
+                CurrentState = State.Started;
+                break;
+            case (State.Started, State.Initialized):
+                await InnerStartedToInitializedAsync(cancellationToken);
+                CurrentState = State.Initialized;
+                break;
+            case (State.Initialized, State.Uninitialized):
+                await InnerInitializedToUninitializedAsync(cancellationToken);
+                CurrentState = State.Uninitialized;
+                break;
+        }
+
+        OnStateTransformed(args);
+    }
+
+    protected virtual void OnStateTransforming(StateTransformEventArgs e)
+    {
+        StateTransforming?.Invoke(this, e);
+    }
+
+    protected virtual void OnStateTransformed(StateTransformEventArgs e)
+    {
+        StateTransformed?.Invoke(this, e);
+    }
 
     protected virtual void Dispose(bool disposing)
     {
@@ -170,7 +238,6 @@ public abstract class StateDrivenEntity : IStateDrivenEntity
         GC.SuppressFinalize(this);
     }
 }
-
 [Serializable]
 public class Notification
 {
@@ -205,7 +272,7 @@ public class EventGroup : List<IEvent>, IEvent
 
 public abstract class Logic : Component
 {
-    protected Logic(string uniqueName) : base(uniqueName, 1, 1000)
+    protected Logic(string uniqueName, Func<Func<IEvent, Task>, IThreadDispatcher<IEvent>> dispatcherFactory) : base(uniqueName, dispatcherFactory)
     {
     }
 
@@ -227,6 +294,7 @@ public abstract class Logic : Component
         foreach (var currentEvent in eventGroup)
         {
             processingTasks.Add(ProcessEventAsync(currentEvent, cancellationToken));
+            base.IncrementEventProcessed();
         }
 
         var processedEvents = await Task.WhenAll(processingTasks);
@@ -272,7 +340,7 @@ public class ProcessorLogic : Logic
     // Cache of computed handler mappings for concrete event types
     private readonly ConcurrentDictionary<Type, Func<IEvent, CancellationToken, Task<IEvent>>> _handlerCache = new();
 
-    protected ProcessorLogic(string uniqueName) : base(uniqueName)
+    protected ProcessorLogic(string uniqueName, Func<Func<IEvent, Task>, IThreadDispatcher<IEvent>> dispatcherFactory) : base(uniqueName, dispatcherFactory)
     {
         InitializeHandlers();
     }
@@ -774,35 +842,152 @@ public class ComponentCounters
 }
 
 /// <summary>
-/// Enhanced Component implementation with optional ActionBlock for message dispatching,
-/// logging support, and performance counters.
+/// Generic thread dispatcher interface for handling asynchronous operations
+/// </summary>
+/// <typeparam name="T">The type of value to dispatch</typeparam>
+public interface IThreadDispatcher<T> : IDisposable
+{
+    /// <summary>
+    /// Dispatches a value for processing
+    /// </summary>
+    /// <param name="value">The value to dispatch</param>
+    /// <returns>A task representing the dispatch operation</returns>
+    Task DispatchAsync(T value);
+
+    /// <summary>
+    /// Completes the dispatcher, preventing new dispatches
+    /// </summary>
+    void Complete();
+
+    /// <summary>
+    /// Gets a task that completes when all dispatched items are processed
+    /// </summary>
+    Task Completion { get; }
+
+    /// <summary>
+    /// Gets the current number of items queued for processing
+    /// </summary>
+    int QueueCount { get; }
+
+    /// <summary>
+    /// Gets whether the dispatcher is accepting new items
+    /// </summary>
+    bool IsAcceptingItems { get; }
+}
+
+/// <summary>
+/// Synchronous dispatcher that processes items immediately on the calling thread
+/// </summary>
+/// <typeparam name="T">The type of value to dispatch</typeparam>
+public class SynchronousDispatcher<T> : IThreadDispatcher<T>
+{
+    private readonly Func<T, Task> _processor;
+    private volatile bool _isCompleted;
+    private readonly TaskCompletionSource<bool> _completionSource = new();
+
+    public SynchronousDispatcher(Func<T, Task> processor)
+    {
+        _processor = processor ?? throw new ArgumentNullException(nameof(processor));
+        _completionSource.SetResult(true); // Always completed for synchronous processing
+    }
+
+    public async Task DispatchAsync(T value)
+    {
+        if (_isCompleted)
+            throw new InvalidOperationException("Dispatcher has been completed");
+
+        await _processor(value);
+    }
+
+    public void Complete()
+    {
+        _isCompleted = true;
+    }
+
+    public Task Completion => _completionSource.Task;
+    public int QueueCount => 0; // No queue for synchronous processing
+    public bool IsAcceptingItems => !_isCompleted;
+
+    public void Dispose()
+    {
+        Complete();
+    }
+}
+
+/// <summary>
+/// ActionBlock-based dispatcher that processes items asynchronously using TPL Dataflow
+/// </summary>
+/// <typeparam name="T">The type of value to dispatch</typeparam>
+public class ActionBlockDispatcher<T> : IThreadDispatcher<T>
+{
+    private readonly ActionBlock<T> _actionBlock;
+    private readonly Func<T, Task> _processor;
+
+    public ActionBlockDispatcher(Func<T, Task> processor, ExecutionDataflowBlockOptions options = null)
+    {
+        _processor = processor ?? throw new ArgumentNullException(nameof(processor));
+
+        var blockOptions = options ?? new ExecutionDataflowBlockOptions
+        {
+            MaxDegreeOfParallelism = 1,
+            BoundedCapacity = 1000
+        };
+
+        _actionBlock = new ActionBlock<T>(_processor, blockOptions);
+    }
+
+    public async Task DispatchAsync(T value)
+    {
+        var posted = await _actionBlock.SendAsync(value);
+        if (!posted)
+            throw new InvalidOperationException("Failed to dispatch item - dispatcher may be shutting down");
+    }
+
+    public void Complete()
+    {
+        _actionBlock.Complete();
+    }
+
+    public Task Completion => _actionBlock.Completion;
+    public int QueueCount => _actionBlock.InputCount;
+    public bool IsAcceptingItems => !_actionBlock.Completion.IsCompleted;
+
+    public void Dispose()
+    {
+        Complete();
+        try
+        {
+            _actionBlock.Completion.Wait(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception)
+        {
+            // Log or handle timeout/cancellation as needed
+        }
+    }
+}
+
+/// <summary>
+/// Enhanced Component implementation with configurable thread dispatcher
 /// </summary>
 public abstract class Component : IComponent, IRecipient, IPublisher, IStateDrivenEntity
 {
     private readonly Publisher _publisher;
     private readonly StateDrivenEntityHelper _stateDrivenEntityHelper;
-    private ActionBlock<Notification> _notificationProcessor;
     private readonly ComponentCounters _counters;
     private readonly ILog _log;
-    private readonly bool _useActionBlock;
-    private readonly int _numOfOwnThreads;
-    private readonly int _queueMaxSize;
-    private readonly ExecutionDataflowBlockOptions _dataflowOptions;
+    private readonly Func<Func<IEvent, Task>, IThreadDispatcher<IEvent>> _dispatcherFactory;
+    private IThreadDispatcher<IEvent> _eventDispatcher;
 
-    protected Component(string uniqueName, int numOfOwnThreads, int queueMaxSize, ILog log = null,
-        ExecutionDataflowBlockOptions dataflowOptions = null)
+    protected Component(
+        string uniqueName,
+        Func<Func<IEvent, Task>, IThreadDispatcher<IEvent>> dispatcherFactory,
+        ILog log = null)
     {
         UniqueName = uniqueName ?? throw new ArgumentNullException(nameof(uniqueName));
+        _dispatcherFactory = dispatcherFactory ?? throw new ArgumentNullException(nameof(dispatcherFactory));
         _log = log ?? new ConsoleLog(uniqueName);
         _counters = new ComponentCounters();
         _publisher = new Publisher(uniqueName);
-        _useActionBlock = numOfOwnThreads > 0;
-        _numOfOwnThreads = numOfOwnThreads;
-        _queueMaxSize = queueMaxSize;
-        _dataflowOptions = dataflowOptions;
-
-        // ActionBlock will now be created in InnerUninitializedToInitializedAsync
-        _notificationProcessor = null;
 
         _stateDrivenEntityHelper = new StateDrivenEntityHelper(
             innerUninitializedToInitialized: InnerUninitializedToInitializedAsync,
@@ -816,7 +1001,7 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
         _stateDrivenEntityHelper.StateTransforming += OnStateTransforming;
         _stateDrivenEntityHelper.StateTransformed += OnStateTransformed;
 
-        _log.Info("Component created (ActionBlock mode: {0})", _useActionBlock);
+        _log.Info("Component created with custom dispatcher");
     }
 
     #region Properties
@@ -827,16 +1012,14 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     protected ILog Log => _log;
 
     /// <summary>
-    /// Gets the current queue count in the ActionBlock (0 if not using ActionBlock or not initialized)
+    /// Gets the current queue count in the dispatcher (0 if not initialized)
     /// </summary>
-    public int QueueCount => _useActionBlock && _notificationProcessor != null ? _notificationProcessor.InputCount : 0;
+    public int QueueCount => _eventDispatcher?.QueueCount ?? 0;
 
     /// <summary>
     /// Gets whether the component is accepting new messages
     /// </summary>
-    public bool IsAcceptingMessages => _useActionBlock && _notificationProcessor != null
-        ? !_notificationProcessor.Completion.IsCompleted
-        : CurrentState == State.Started;
+    public bool IsAcceptingMessages => _eventDispatcher?.IsAcceptingItems == true && CurrentState == State.Started;
     #endregion
 
     #region IComponent Implementation
@@ -907,103 +1090,58 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
             throw new InvalidOperationException($"Component is not in Started state (Current: {CurrentState})");
         }
 
+        if (_eventDispatcher == null)
+        {
+            _log.Error("Event dispatcher is not initialized");
+            throw new InvalidOperationException("Event dispatcher is not initialized");
+        }
+
         _counters.IncrementNotificationReceived();
         _log.Info("Notification received with {0} events", notification.EventGroup.Count);
 
-        if (_useActionBlock && _notificationProcessor != null)
+        // Dispatch each event in the notification
+        var dispatchTasks = new List<Task>();
+        foreach (var evt in notification.EventGroup)
         {
-            // Post notification to ActionBlock for processing
-            var posted = await _notificationProcessor.SendAsync(notification, cancellationToken);
+            dispatchTasks.Add(_eventDispatcher.DispatchAsync(evt));
+        }
 
-            if (!posted)
-            {
-                _log.Warn("Failed to queue notification - ActionBlock may be shutting down");
-                throw new InvalidOperationException("Component is not accepting new notifications");
-            }
-        }
-        else
-        {
-            // Process notification directly without ActionBlock
-            await ProcessNotificationDirectlyAsync(notification, cancellationToken);
-        }
+        await Task.WhenAll(dispatchTasks);
     }
 
     /// <summary>
-    /// Internal method called by ActionBlock to process notifications
+    /// Internal method called by the dispatcher to process individual events
     /// </summary>
-    private async Task ProcessNotificationAsync(Notification notification)
+    private async Task ProcessEventAsync(IEvent evt)
     {
         try
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-            // Process each event in the notification
-            foreach (var evt in notification.EventGroup)
-            {
-                _counters.IncrementEventProcessed();
-            }
+            // Create a single-event group for processing
+            var eventGroup = new EventGroup { evt };
 
             // Call the abstract ConsumeAsync method
-            await ConsumeAsync(notification.EventGroup, CancellationToken.None);
+            await ConsumeAsync(eventGroup, CancellationToken.None);
 
+            _counters.IncrementEventProcessed();
             _counters.IncrementNotificationProcessed();
             stopwatch.Stop();
 
-            _log.Info("Processed notification with {0} events in {1}ms",
-                     notification.EventGroup.Count, stopwatch.ElapsedMilliseconds);
+            _log.Info("Processed event {0} in {1}ms", evt.GetType().Name, stopwatch.ElapsedMilliseconds);
         }
         catch (Exception ex)
         {
             _counters.IncrementEventError();
-            _log.Error(ex, "Error processing notification");
+            _log.Error(ex, "Error processing event {0}", evt.GetType().Name);
 
             try
             {
-                await HandleNotificationErrorAsync(ex, notification, CancellationToken.None);
+                await HandleEventErrorAsync(ex, evt, CancellationToken.None);
             }
             catch (Exception handlerEx)
             {
-                _log.Error(handlerEx, "Error in notification error handler");
-            }
-        }
-    }
-
-    /// <summary>
-    /// Direct processing method used when not using ActionBlock
-    /// </summary>
-    private async Task ProcessNotificationDirectlyAsync(Notification notification, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-
-            // Process each event in the notification
-            foreach (var evt in notification.EventGroup)
-            {
-                _counters.IncrementEventProcessed();
-            }
-
-            // Call the abstract ConsumeAsync method
-            await ConsumeAsync(notification.EventGroup, cancellationToken);
-
-            _counters.IncrementNotificationProcessed();
-            stopwatch.Stop();
-
-            _log.Info("Processed notification with {0} events in {1}ms",
-                     notification.EventGroup.Count, stopwatch.ElapsedMilliseconds);
-        }
-        catch (Exception ex)
-        {
-            _counters.IncrementEventError();
-            _log.Error(ex, "Error processing notification");
-
-            try
-            {
-                await HandleNotificationErrorAsync(ex, notification, cancellationToken);
-            }
-            catch (Exception handlerEx)
-            {
-                _log.Error(handlerEx, "Error in notification error handler");
+                _log.Error(handlerEx, "Error in event error handler");
             }
         }
     }
@@ -1014,13 +1152,23 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     protected abstract Task ConsumeAsync(EventGroup eventGroup, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Override this method to handle errors that occur during notification processing.
+    /// Override this method to handle errors that occur during event processing.
+    /// </summary>
+    protected virtual Task HandleEventErrorAsync(Exception exception, IEvent evt, CancellationToken cancellationToken)
+    {
+        _log.Error(exception, "Unhandled error processing event {0}", evt.GetType().Name);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Legacy method for backward compatibility
     /// </summary>
     protected virtual Task HandleNotificationErrorAsync(Exception exception, Notification notification, CancellationToken cancellationToken)
     {
         _log.Error(exception, "Unhandled error in ConsumeAsync");
         return Task.CompletedTask;
     }
+
     #endregion
 
     #region IStateDrivenEntity Implementation
@@ -1062,12 +1210,9 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     {
         _log.Info("Initializing component");
 
-        // Create ActionBlock if needed
-        if (_useActionBlock)
-        {
-            CreateActionBlock();
-            _log.Info("ActionBlock created during initialization");
-        }
+        // Create the event dispatcher
+        _eventDispatcher = _dispatcherFactory(ProcessEventAsync);
+        _log.Info("Event dispatcher created during initialization");
 
         return Task.CompletedTask;
     }
@@ -1076,22 +1221,23 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     {
         _log.Info("Uninitializing component");
 
-        // Complete and dispose ActionBlock if it exists
-        if (_useActionBlock && _notificationProcessor != null)
+        // Complete and dispose the event dispatcher
+        if (_eventDispatcher != null)
         {
-            _notificationProcessor.Complete();
+            _eventDispatcher.Complete();
             try
             {
-                await _notificationProcessor.Completion;
-                _log.Info("ActionBlock completed successfully");
+                await _eventDispatcher.Completion;
+                _log.Info("Event dispatcher completed successfully");
             }
             catch (Exception ex)
             {
-                _log.Error(ex, "Error completing ActionBlock");
+                _log.Error(ex, "Error completing event dispatcher");
             }
             finally
             {
-                _notificationProcessor = null;
+                _eventDispatcher?.Dispose();
+                _eventDispatcher = null;
             }
         }
     }
@@ -1100,11 +1246,10 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     {
         _log.Info("Starting component");
 
-        // ActionBlock is already created and ready to process messages
-        // There's no explicit "start" method - it begins processing as soon as messages are posted
-        if (_useActionBlock && _notificationProcessor != null)
+        // Dispatcher is already created and ready to process events
+        if (_eventDispatcher != null)
         {
-            _log.Info("ActionBlock ready to process notifications");
+            _log.Info("Event dispatcher ready to process events");
         }
 
         return Task.CompletedTask;
@@ -1114,7 +1259,7 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     {
         _log.Info("Stopping component");
 
-        // ActionBlock continues to exist but component won't accept new notifications
+        // Dispatcher continues to exist but component won't accept new notifications
         // due to state check in HandleNotificationAsync
 
         return Task.CompletedTask;
@@ -1124,11 +1269,8 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     {
         _log.Warn("Component transitioning to Invalid state");
 
-        // Complete ActionBlock when going invalid
-        if (_useActionBlock && _notificationProcessor != null)
-        {
-            _notificationProcessor.Complete();
-        }
+        // Complete dispatcher when going invalid
+        _eventDispatcher?.Complete();
         return Task.CompletedTask;
     }
 
@@ -1136,32 +1278,11 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     {
         _log.Info("Recovering from Invalid state");
 
-        // Clean up the ActionBlock reference since it was completed in InnerAnyToInvalidAsync
-        if (_useActionBlock)
-        {
-            _notificationProcessor = null;
-        }
+        // Clean up the dispatcher reference since it was completed in InnerAnyToInvalidAsync
+        _eventDispatcher?.Dispose();
+        _eventDispatcher = null;
 
         return Task.CompletedTask;
-    }
-
-    /// <summary>
-    /// Creates a new ActionBlock with the configured options
-    /// </summary>
-    private void CreateActionBlock()
-    {
-        if (!_useActionBlock) return;
-
-        // Configure ActionBlock options
-        var options = _dataflowOptions ?? new ExecutionDataflowBlockOptions
-        {
-            MaxDegreeOfParallelism = _numOfOwnThreads,
-            BoundedCapacity = _queueMaxSize,
-            CancellationToken = CancellationToken.None
-        };
-
-        // Create ActionBlock for processing notifications
-        _notificationProcessor = new ActionBlock<Notification>(ProcessNotificationAsync, options);
     }
     #endregion
 
@@ -1178,58 +1299,63 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
                $"Notifications Processed: {_counters.NotificationProcessedCount}, " +
                $"State Transitions: {_counters.StateTransitionCount}, " +
                $"Queue Count: {QueueCount}, " +
-               $"ActionBlock Mode: {_useActionBlock}, " +
-               $"ActionBlock Created: {_notificationProcessor != null}, " +
+               $"Dispatcher Type: {_eventDispatcher?.GetType().Name ?? "Not initialized"}, " +
                $"Current State: {CurrentState}";
     }
 
     /// <summary>
-    /// Waits for all pending notifications to be processed
+    /// Waits for all pending events to be processed
     /// </summary>
     public async Task WaitForCompletionAsync(TimeSpan timeout = default)
     {
-        if (!_useActionBlock || _notificationProcessor == null)
+        if (_eventDispatcher == null)
         {
-            _log.Info("No ActionBlock to wait for - operating in direct mode or not initialized");
+            _log.Info("No event dispatcher to wait for - not initialized");
             return;
         }
 
         if (timeout == default) timeout = TimeSpan.FromSeconds(30);
 
-        _notificationProcessor.Complete();
+        _eventDispatcher.Complete();
 
         using var cts = new CancellationTokenSource(timeout);
         try
         {
-            await _notificationProcessor.Completion.WaitAsync(cts.Token);
-            _log.Info("All notifications processed successfully");
+            await _eventDispatcher.Completion.WaitAsync(cts.Token);
+            _log.Info("All events processed successfully");
         }
         catch (OperationCanceledException)
         {
-            _log.Warn("Timeout waiting for notifications to complete");
+            _log.Warn("Timeout waiting for events to complete");
             throw;
         }
     }
+
     #endregion
 
     #region IDisposable Implementation
+
     protected virtual void Dispose(bool disposing)
     {
         if (disposing)
         {
             _log.Info("Disposing component");
 
-            // Complete and dispose ActionBlock if it exists
-            if (_useActionBlock && _notificationProcessor != null)
+            // Complete and dispose event dispatcher
+            if (_eventDispatcher != null)
             {
-                _notificationProcessor.Complete();
+                _eventDispatcher.Complete();
                 try
                 {
-                    _notificationProcessor.Completion.Wait(TimeSpan.FromSeconds(5));
+                    _eventDispatcher.Completion.Wait(TimeSpan.FromSeconds(5));
                 }
                 catch (Exception ex)
                 {
-                    _log.Error(ex, "Error waiting for ActionBlock completion during dispose");
+                    _log.Error(ex, "Error waiting for event dispatcher completion during dispose");
+                }
+                finally
+                {
+                    _eventDispatcher?.Dispose();
                 }
             }
 
@@ -1243,106 +1369,121 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
         Dispose(true);
         GC.SuppressFinalize(this);
     }
+
     #endregion
+
+    protected void IncrementEventProcessed()
+    {
+        this.Counters.IncrementEventProcessed();
+    }
 }
+
+/// <summary>
+/// Factory class for creating common dispatcher configurations
+/// </summary>
+public static class DispatcherFactory
+{
+    /// <summary>
+    /// Creates a synchronous dispatcher factory
+    /// </summary>
+    public static Func<Func<IEvent, Task>, IThreadDispatcher<IEvent>> CreateSynchronous()
+    {
+        return processor => new SynchronousDispatcher<IEvent>(processor);
+    }
+
+    /// <summary>
+    /// Creates an ActionBlock dispatcher factory with default options
+    /// </summary>
+    public static Func<Func<IEvent, Task>, IThreadDispatcher<IEvent>> CreateActionBlock(
+        int maxDegreeOfParallelism = 1,
+        int boundedCapacity = 1000)
+    {
+        return processor => new ActionBlockDispatcher<IEvent>(processor, new ExecutionDataflowBlockOptions
+        {
+            MaxDegreeOfParallelism = maxDegreeOfParallelism,
+            BoundedCapacity = boundedCapacity
+        });
+    }
+
+    /// <summary>
+    /// Creates an ActionBlock dispatcher factory with custom options
+    /// </summary>
+    public static Func<Func<IEvent, Task>, IThreadDispatcher<IEvent>> CreateActionBlock(
+        ExecutionDataflowBlockOptions options)
+    {
+        return processor => new ActionBlockDispatcher<IEvent>(processor, options);
+    }
+}
+
 
 /// <summary>
 /// Helper class that encapsulates state-driven entity behavior using composition.
 /// This allows the async state management to be reused across different entity types.
 /// </summary>
-public class StateDrivenEntityHelper : IStateDrivenEntity, IDisposable
+public class StateDrivenEntityHelper : StateDrivenEntity, IDisposable
 {
-    private State _currentState = State.Uninitialized;
-    private readonly SemaphoreSlim _stateLock = new(1, 1);
-
-    // Delegate types for state transition callbacks
     private readonly Func<CancellationToken, Task> _innerUninitializedToInitialized;
-    private readonly Func<CancellationToken, Task> _innerInitializedToUninitialized;
     private readonly Func<CancellationToken, Task> _innerInitializedToStarted;
     private readonly Func<CancellationToken, Task> _innerStartedToInitialized;
+    private readonly Func<CancellationToken, Task> _innerInitializedToUninitialized;
     private readonly Func<CancellationToken, Task> _innerAnyToInvalid;
     private readonly Func<CancellationToken, Task> _innerInvalidToUninitialized;
 
     public StateDrivenEntityHelper(
         Func<CancellationToken, Task> innerUninitializedToInitialized,
-        Func<CancellationToken, Task> innerInitializedToUninitialized,
         Func<CancellationToken, Task> innerInitializedToStarted,
         Func<CancellationToken, Task> innerStartedToInitialized,
+        Func<CancellationToken, Task> innerInitializedToUninitialized,
         Func<CancellationToken, Task> innerAnyToInvalid,
         Func<CancellationToken, Task> innerInvalidToUninitialized)
     {
-        _innerUninitializedToInitialized = innerUninitializedToInitialized ?? throw new ArgumentNullException(nameof(innerUninitializedToInitialized));
-        _innerInitializedToUninitialized = innerInitializedToUninitialized ?? throw new ArgumentNullException(nameof(innerInitializedToUninitialized));
-        _innerInitializedToStarted = innerInitializedToStarted ?? throw new ArgumentNullException(nameof(innerInitializedToStarted));
-        _innerStartedToInitialized = innerStartedToInitialized ?? throw new ArgumentNullException(nameof(innerStartedToInitialized));
-        _innerAnyToInvalid = innerAnyToInvalid ?? throw new ArgumentNullException(nameof(innerAnyToInvalid));
-        _innerInvalidToUninitialized = innerInvalidToUninitialized ?? throw new ArgumentNullException(nameof(innerInvalidToUninitialized));
+        _innerUninitializedToInitialized = innerUninitializedToInitialized ??
+            throw new ArgumentNullException(nameof(innerUninitializedToInitialized));
+
+        _innerInitializedToStarted = innerInitializedToStarted ??
+            throw new ArgumentNullException(nameof(innerInitializedToStarted));
+
+        _innerStartedToInitialized = innerStartedToInitialized ??
+            throw new ArgumentNullException(nameof(innerStartedToInitialized));
+
+        _innerInitializedToUninitialized = innerInitializedToUninitialized ??
+            throw new ArgumentNullException(nameof(innerInitializedToUninitialized));
+
+        _innerAnyToInvalid = innerAnyToInvalid ??
+            throw new ArgumentNullException(nameof(innerAnyToInvalid));
+
+        _innerInvalidToUninitialized = innerInvalidToUninitialized ??
+            throw new ArgumentNullException(nameof(innerInvalidToUninitialized));
     }
 
-    public State CurrentState => _currentState;
-
-    public virtual async Task TransformToAsync(State state, CancellationToken cancellationToken = default)
+    protected override Task InnerUninitializedToInitializedAsync(CancellationToken cancellationToken = default)
     {
-        await _stateLock.WaitAsync(cancellationToken);
-        try
-        {
-            var previousState = _currentState;
-            if (previousState == state) return;
-
-            var args = new StateTransformEventArgs { PreviousState = previousState, NextState = state };
-            StateTransforming?.Invoke(this, args);
-
-            await ExecuteStateTransitionAsync(previousState, state, cancellationToken);
-
-            _currentState = state;
-            StateTransformed?.Invoke(this, args);
-        }
-        finally
-        {
-            _stateLock.Release();
-        }
+        return _innerUninitializedToInitialized(cancellationToken);
     }
 
-    private async Task ExecuteStateTransitionAsync(State from, State to, CancellationToken cancellationToken)
+    protected override Task InnerInitializedToStartedAsync(CancellationToken cancellationToken = default)
     {
-        switch ((from, to))
-        {
-            case (State.Uninitialized, State.Initialized):
-                await _innerUninitializedToInitialized(cancellationToken);
-                break;
-            case (State.Initialized, State.Uninitialized):
-                await _innerInitializedToUninitialized(cancellationToken);
-                break;
-            case (State.Initialized, State.Started):
-                await _innerInitializedToStarted(cancellationToken);
-                break;
-            case (State.Started, State.Initialized):
-                await _innerStartedToInitialized(cancellationToken);
-                break;
-            case (_, State.Invalid):
-                await _innerAnyToInvalid(cancellationToken);
-                break;
-            case (State.Invalid, State.Uninitialized):
-                await _innerInvalidToUninitialized(cancellationToken);
-                break;
-        }
+        return _innerInitializedToStarted(cancellationToken);
     }
 
-    public event EventHandler<StateTransformEventArgs> StateTransforming;
-    public event EventHandler<StateTransformEventArgs> StateTransformed;
-
-    protected virtual void Dispose(bool disposing)
+    protected override Task InnerStartedToInitializedAsync(CancellationToken cancellationToken = default)
     {
-        if (disposing)
-        {
-            _stateLock?.Dispose();
-        }
+        return _innerStartedToInitialized(cancellationToken);
     }
 
-    public void Dispose()
+    protected override Task InnerInitializedToUninitializedAsync(CancellationToken cancellationToken = default)
     {
-        Dispose(true);
-        GC.SuppressFinalize(this);
+        return _innerInitializedToUninitialized(cancellationToken);
+    }
+
+    protected override Task InnerAnyToInvalidAsync(CancellationToken cancellationToken = default)
+    {
+        return _innerAnyToInvalid(cancellationToken);
+    }
+
+    protected override Task InnerInvalidToUninitializedAsync(CancellationToken cancellationToken = default)
+    {
+        return _innerInvalidToUninitialized(cancellationToken);
     }
 }
 
