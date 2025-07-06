@@ -1,4 +1,5 @@
-﻿using System.Threading.Tasks.Dataflow;
+﻿using System.Text;
+using System.Threading.Tasks.Dataflow;
 
 namespace GNS.Async;
 
@@ -521,10 +522,139 @@ public class ActionBlockDispatcher<T> : IThreadDispatcher<T>
     }
 }
 
+
 /// <summary>
-/// Enhanced Component implementation with configurable thread dispatcher
+/// Represents a node in the collected data tree
 /// </summary>
-public abstract class Component : IComponent, IRecipient, IPublisher, IStateDrivenEntity
+public class CollectedNode
+{
+    private readonly Dictionary<string, CollectedNode> _children = new();
+    private readonly Dictionary<string, object> _properties = new();
+
+    public CollectedNode(string name)
+    {
+        Name = name ?? throw new ArgumentNullException(nameof(name));
+    }
+
+    public string Name { get; }
+
+    /// <summary>
+    /// Gets all child nodes
+    /// </summary>
+    public IReadOnlyDictionary<string, CollectedNode> Children => _children;
+
+    /// <summary>
+    /// Gets all properties
+    /// </summary>
+    public IReadOnlyDictionary<string, object> Properties => _properties;
+
+    /// <summary>
+    /// Adds a child node
+    /// </summary>
+    public void AddChild(string key, CollectedNode child)
+    {
+        if (string.IsNullOrEmpty(key))
+            throw new ArgumentException("Key cannot be null or empty", nameof(key));
+        if (child == null)
+            throw new ArgumentNullException(nameof(child));
+
+        _children[key] = child;
+    }
+
+    /// <summary>
+    /// Adds a property
+    /// </summary>
+    public void AddProperty(string key, object value)
+    {
+        if (string.IsNullOrEmpty(key))
+            throw new ArgumentException("Key cannot be null or empty", nameof(key));
+
+        _properties[key] = value;
+    }
+
+    /// <summary>
+    /// Gets a child node by key
+    /// </summary>
+    public CollectedNode GetChild(string key)
+    {
+        return _children.TryGetValue(key, out var child) ? child : null;
+    }
+
+    /// <summary>
+    /// Gets a property by key
+    /// </summary>
+    public T GetProperty<T>(string key)
+    {
+        if (_properties.TryGetValue(key, out var value) && value is T)
+            return (T)value;
+        return default(T);
+    }
+
+    /// <summary>
+    /// Converts the node tree to a readable string representation
+    /// </summary>
+    public string ToTreeString(int indent = 0)
+    {
+        var sb = new StringBuilder();
+        var indentStr = new string(' ', indent * 2);
+
+        sb.AppendLine($"{indentStr}{Name}:");
+
+        // Add properties
+        foreach (var prop in _properties)
+        {
+            sb.AppendLine($"{indentStr}  {prop.Key}: {prop.Value}");
+        }
+
+        // Add children
+        foreach (var child in _children.Values)
+        {
+            sb.Append(child.ToTreeString(indent + 1));
+        }
+
+        return sb.ToString();
+    }
+}
+
+/// <summary>
+/// Interface for objects that can collect their state and metrics data
+/// </summary>
+public interface ICollectable
+{
+    /// <summary>
+    /// Collects current state and metrics data into a CollectedNode
+    /// </summary>
+    CollectedNode CollectData();
+}
+
+/// <summary>
+/// Tracks subscription metrics for a specific recipient-rule pair
+/// </summary>
+internal class SubscriptionMetrics
+{
+    private long _eventsSent;
+    private DateTime _lastEventSent;
+
+    public long EventsSent => _eventsSent;
+    public DateTime LastEventSent => _lastEventSent;
+
+    public void IncrementEventsSent(int count)
+    {
+        Interlocked.Add(ref _eventsSent, count);
+        _lastEventSent = DateTime.UtcNow;
+    }
+
+    public void Reset()
+    {
+        Interlocked.Exchange(ref _eventsSent, 0);
+        _lastEventSent = DateTime.MinValue;
+    }
+}
+
+/// <summary>
+/// Enhanced Component implementation with metrics collection capabilities
+/// </summary>
+public abstract class Component : IComponent, IRecipient, IPublisher, IStateDrivenEntity, ICollectable
 {
     private readonly Publisher _publisher;
     private readonly StateDrivenEntityHelper _stateDrivenEntityHelper;
@@ -532,6 +662,7 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     private readonly ILog _log;
     private readonly Func<Func<EventGroup, Task>, IThreadDispatcher<EventGroup>> _dispatcherFactory;
     private IThreadDispatcher<EventGroup> _eventDispatcher;
+    private DateTime _lastMessageReceived = DateTime.MinValue;
 
     protected Component(
         string uniqueName,
@@ -565,6 +696,7 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     public virtual bool IsRoot { get; set; }
     public ComponentCounters Counters => _counters;
     protected ILog Log => _log;
+    public DateTime LastMessageReceived => _lastMessageReceived;
 
     /// <summary>
     /// Gets the current queue count in the dispatcher (0 if not initialized)
@@ -637,6 +769,9 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     {
         if (notification == null)
             throw new ArgumentNullException(nameof(notification));
+
+        // Update last message received time
+        _lastMessageReceived = DateTime.UtcNow;
 
         // Only accept notifications when in Started state
         if (CurrentState != State.Started)
@@ -735,6 +870,35 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     {
         add => _stateDrivenEntityHelper.StateTransformed += value;
         remove => _stateDrivenEntityHelper.StateTransformed -= value;
+    }
+    #endregion
+
+    #region ICollectable Implementation
+    public virtual CollectedNode CollectData()
+    {
+        var node = new CollectedNode(UniqueName);
+
+        // Add component-level properties
+        node.AddProperty("ComponentType", GetType().Name);
+        node.AddProperty("CurrentState", CurrentState.ToString());
+        node.AddProperty("LastMessageReceived", _lastMessageReceived);
+        node.AddProperty("IsRoot", IsRoot);
+        node.AddProperty("IsAcceptingMessages", IsAcceptingMessages);
+        node.AddProperty("QueueCount", QueueCount);
+        node.AddProperty("DispatcherType", _eventDispatcher?.GetType().Name ?? "Not initialized");
+
+        // Add counter metrics
+        node.AddProperty("EventsProcessed", _counters.EventProcessedCount);
+        node.AddProperty("EventErrors", _counters.EventErrorCount);
+        node.AddProperty("NotificationsReceived", _counters.NotificationReceivedCount);
+        node.AddProperty("NotificationsProcessed", _counters.NotificationProcessedCount);
+        node.AddProperty("StateTransitions", _counters.StateTransitionCount);
+
+        // Add publisher data as AttachedComponents
+        var publisherData = _publisher.CollectData();
+        node.AddChild("AttachedComponents", publisherData);
+
+        return node;
     }
     #endregion
 
@@ -850,6 +1014,14 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     }
 
     /// <summary>
+    /// Gets a tree-formatted metrics report
+    /// </summary>
+    public string GetMetricsTree()
+    {
+        return CollectData().ToTreeString();
+    }
+
+    /// <summary>
     /// Waits for all pending events to be processed
     /// </summary>
     public async Task WaitForCompletionAsync(TimeSpan timeout = default)
@@ -924,6 +1096,7 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     }
 }
 
+
 /// <summary>
 /// Factory class for creating common dispatcher configurations
 /// </summary>
@@ -961,13 +1134,19 @@ public static class DispatcherFactory
     }
 }
 
-internal class Publisher : IPublisher
+
+/// <summary>
+/// Enhanced Publisher with metrics collection capabilities
+/// </summary>
+internal class Publisher : IPublisher, ICollectable
 {
     private readonly string _uniqueName;
     // Primary subscription index by rule for efficient matching
     private readonly SwapDictionary<IRule, ISet<IRecipient>> _subscriptionsByRule = new();
     // Secondary index by recipient for efficient unsubscribe operations
     private readonly SwapDictionary<IRecipient, ISet<IRule>> _rulesByRecipient = new();
+    // Metrics tracking for each recipient-rule pair
+    private readonly SwapDictionary<string, SubscriptionMetrics> _subscriptionMetrics = new();
 
     public Publisher(string uniqueName)
     {
@@ -982,6 +1161,11 @@ internal class Publisher : IPublisher
     /// If set to 0 or negative, no splitting will occur.
     /// </summary>
     public int EventGroupMaxSize { get; set; }
+
+    private string GetMetricsKey(IRecipient recipient, IRule rule)
+    {
+        return $"{recipient.GetType().Name}_{recipient.GetHashCode()}_{rule.GetType().Name}_{rule.GetHashCode()}";
+    }
 
     public async Task PublishAsync(EventGroup eventGroup, CancellationToken cancellationToken)
     {
@@ -1055,7 +1239,16 @@ internal class Publisher : IPublisher
                     foreach (IRecipient recipient in recipients)
                     {
                         var notification = new Notification(chunk, rule);
-                        notificationTasks.Add(recipient.HandleNotificationAsync(notification, cancellationToken));
+
+                        // Track metrics before sending
+                        var metricsKey = GetMetricsKey(recipient, rule);
+                        if (!_subscriptionMetrics.TryGetValue(metricsKey, out var metrics))
+                        {
+                            metrics = new SubscriptionMetrics();
+                            _subscriptionMetrics.TryAdd(metricsKey, metrics);
+                        }
+
+                        notificationTasks.Add(SendNotificationWithMetrics(recipient, notification, metrics, cancellationToken));
                     }
                 }
 
@@ -1072,6 +1265,12 @@ internal class Publisher : IPublisher
                 }
             }
         }
+    }
+
+    private async Task SendNotificationWithMetrics(IRecipient recipient, Notification notification, SubscriptionMetrics metrics, CancellationToken cancellationToken)
+    {
+        await recipient.HandleNotificationAsync(notification, cancellationToken);
+        metrics.IncrementEventsSent(notification.EventGroup.Count);
     }
 
     public void Subscribe(IRecipient recipient, IRule rule)
@@ -1096,6 +1295,13 @@ internal class Publisher : IPublisher
             _rulesByRecipient.Add(recipient, rules);
         }
         rules.Add(rule);
+
+        // Initialize metrics for this subscription
+        var metricsKey = GetMetricsKey(recipient, rule);
+        if (!_subscriptionMetrics.ContainsKey(metricsKey))
+        {
+            _subscriptionMetrics.TryAdd(metricsKey, new SubscriptionMetrics());
+        }
     }
 
     public void Unsubscribe(IRecipient recipient, IRule rule)
@@ -1124,6 +1330,10 @@ internal class Publisher : IPublisher
                 _rulesByRecipient.Remove(recipient);
             }
         }
+
+        // Clean up metrics
+        var metricsKey = GetMetricsKey(recipient, rule);
+        _subscriptionMetrics.Remove(metricsKey);
     }
 
     public void Unsubscribe(IRecipient recipient)
@@ -1148,6 +1358,10 @@ internal class Publisher : IPublisher
                         _subscriptionsByRule.Remove(rule);
                     }
                 }
+
+                // Clean up metrics
+                var metricsKey = GetMetricsKey(recipient, rule);
+                _subscriptionMetrics.Remove(metricsKey);
             }
 
             // Remove recipient from index
@@ -1167,5 +1381,45 @@ internal class Publisher : IPublisher
     public IEnumerable<IRecipient> Subscribers()
     {
         return _rulesByRecipient.Keys;
+    }
+
+    public CollectedNode CollectData()
+    {
+        var node = new CollectedNode(_uniqueName);
+
+        // Add publisher-level properties
+        node.AddProperty("EventGroupMaxSize", EventGroupMaxSize);
+        node.AddProperty("TotalSubscriptions", _subscriptionMetrics.Count);
+        node.AddProperty("TotalRules", _subscriptionsByRule.Count);
+        node.AddProperty("TotalRecipients", _rulesByRecipient.Count);
+
+        // Add subscription details
+        foreach (var recipientRules in _rulesByRecipient)
+        {
+            var recipient = recipientRules.Key;
+            var rules = recipientRules.Value;
+
+            var recipientNode = new CollectedNode($"{recipient.GetType().Name}_{recipient.GetHashCode()}");
+            recipientNode.AddProperty("RecipientType", recipient.GetType().Name);
+            recipientNode.AddProperty("RuleCount", rules.Count);
+
+            foreach (var rule in rules)
+            {
+                var metricsKey = GetMetricsKey(recipient, rule);
+                if (_subscriptionMetrics.TryGetValue(metricsKey, out var metrics))
+                {
+                    var ruleNode = new CollectedNode($"{rule.GetType().Name}_{rule.GetHashCode()}");
+                    ruleNode.AddProperty("RuleType", rule.GetType().Name);
+                    ruleNode.AddProperty("EventsSent", metrics.EventsSent);
+                    ruleNode.AddProperty("LastEventSent", metrics.LastEventSent);
+
+                    recipientNode.AddChild($"Rule_{rule.GetHashCode()}", ruleNode);
+                }
+            }
+
+            node.AddChild($"Recipient_{recipient.GetHashCode()}", recipientNode);
+        }
+
+        return node;
     }
 }
