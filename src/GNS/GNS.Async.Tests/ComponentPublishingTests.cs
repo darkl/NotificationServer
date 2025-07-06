@@ -81,6 +81,11 @@ public class ComponentPublishingTests
         {
             return base.GetHashCode();
         }
+
+        public object Clone()
+        {
+            return MemberwiseClone();
+        }
     }
 
     [Test]

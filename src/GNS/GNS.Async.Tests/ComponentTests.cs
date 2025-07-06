@@ -61,7 +61,7 @@ public class ComponentTests
 
         await component.HandleNotificationAsync(notification);
         await Task.Delay(300);
-        Assert.AreEqual(eventGroup, component.ConsumedEvents);
+        CollectionAssert.AreEqual(eventGroup, component.ConsumedEvents);
     }
 
     [Test]
@@ -122,6 +122,10 @@ public class DummyRule : IRule
 {
     public bool ShouldActivate = true;
     public bool IsActivated(IEvent e) => ShouldActivate;
+    public object Clone()
+    {
+        return MemberwiseClone();
+    }
 }
 
 public class DummyRecipient : IRecipient

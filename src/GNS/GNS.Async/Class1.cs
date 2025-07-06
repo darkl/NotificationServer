@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+﻿using System.Linq.Expressions;
 using System.Reflection;
 using System.Threading.Tasks.Dataflow;
 
@@ -7,7 +7,7 @@ namespace GNS.Async;
 public interface IServer : IStateDrivenEntity
 {
     IRuntimeContext RuntimeContext { get; }
-}
+} 
 
 public interface IRuntimeContext
 {
@@ -272,7 +272,7 @@ public class EventGroup : List<IEvent>, IEvent
 
 public abstract class Logic : Component
 {
-    protected Logic(string uniqueName, Func<Func<IEvent, Task>, IThreadDispatcher<IEvent>> dispatcherFactory) : base(uniqueName, dispatcherFactory)
+    protected Logic(string uniqueName, Func<Func<EventGroup, Task>, IThreadDispatcher<EventGroup>> dispatcherFactory) : base(uniqueName, dispatcherFactory)
     {
     }
 
@@ -319,229 +319,6 @@ public abstract class Logic : Component
 
     public abstract Task<IEvent> ProcessEventAsync(IEvent eventToProcess, CancellationToken cancellationToken);
 }
-
-/// <summary>
-/// Attribute used to mark methods as event processors.
-/// </summary>
-[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
-public class ProcessorAttribute : Attribute
-{
-}
-
-/// <summary>
-/// A Logic implementation that automatically dispatches events to methods decorated with [Processor] attribute.
-/// Supports both synchronous and asynchronous processor methods.
-/// </summary>
-public class ProcessorLogic : Logic
-{
-    // Maps event types to method info for handlers
-    private readonly Dictionary<Type, MethodInfo> _handlers = new();
-
-    // Cache of computed handler mappings for concrete event types
-    private readonly ConcurrentDictionary<Type, Func<IEvent, CancellationToken, Task<IEvent>>> _handlerCache = new();
-
-    protected ProcessorLogic(string uniqueName, Func<Func<IEvent, Task>, IThreadDispatcher<IEvent>> dispatcherFactory) : base(uniqueName, dispatcherFactory)
-    {
-        InitializeHandlers();
-    }
-
-    /// <summary>
-    /// Initializes the event handler mappings by examining the current type for methods
-    /// decorated with the [Processor] attribute.
-    /// </summary>
-    private void InitializeHandlers()
-    {
-        // Get all methods in this type with the Processor attribute
-        var processorMethods = GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-            .Where(m => m.GetCustomAttribute<ProcessorAttribute>() != null);
-
-        foreach (var method in processorMethods)
-        {
-            ValidateProcessorMethod(method);
-
-            // Get the event type this processor handles (first parameter)
-            var eventType = method.GetParameters()[0].ParameterType;
-
-            if (_handlers.ContainsKey(eventType))
-            {
-                throw new InvalidOperationException(
-                    $"Multiple processor methods found for event type {eventType.Name}. Only one processor per event type is allowed.");
-            }
-
-            _handlers[eventType] = method;
-        }
-    }
-
-    /// <summary>
-    /// Validates that a processor method has the correct signature
-    /// </summary>
-    private static void ValidateProcessorMethod(MethodInfo method)
-    {
-        var parameters = method.GetParameters();
-
-        // Must have 1 or 2 parameters
-        if (parameters.Length < 1 || parameters.Length > 2)
-        {
-            throw new InvalidOperationException(
-                $"Method {method.Name} marked with [Processor] attribute must accept 1-2 parameters: " +
-                "IEvent (or derived type) and optionally CancellationToken.");
-        }
-
-        // First parameter must be IEvent or derived
-        if (!typeof(IEvent).IsAssignableFrom(parameters[0].ParameterType))
-        {
-            throw new InvalidOperationException(
-                $"Method {method.Name} marked with [Processor] attribute must have first parameter of type IEvent or a derived type.");
-        }
-
-        // Second parameter (if present) must be CancellationToken
-        if (parameters.Length == 2 && parameters[1].ParameterType != typeof(CancellationToken))
-        {
-            throw new InvalidOperationException(
-                $"Method {method.Name} marked with [Processor] attribute must have second parameter of type CancellationToken if present.");
-        }
-
-        // Validate return type
-        var returnType = method.ReturnType;
-        var isAsync = returnType.IsGenericType && returnType.GetGenericTypeDefinition() == typeof(Task<>);
-        var isVoidAsync = returnType == typeof(Task);
-        var isSync = returnType == typeof(void) || typeof(IEvent).IsAssignableFrom(returnType);
-
-        if (!isAsync && !isVoidAsync && !isSync)
-        {
-            throw new InvalidOperationException(
-                $"Method {method.Name} marked with [Processor] attribute must return void, IEvent, Task, or Task<IEvent>.");
-        }
-
-        // If async, validate the generic type
-        if (isAsync)
-        {
-            var asyncReturnType = returnType.GetGenericArguments()[0];
-            if (!typeof(IEvent).IsAssignableFrom(asyncReturnType))
-            {
-                throw new InvalidOperationException(
-                    $"Method {method.Name} marked with [Processor] attribute returning Task<T> must have T as IEvent or derived type.");
-            }
-        }
-    }
-
-    /// <summary>
-    /// Creates a strongly-typed processor handler for the given event type and method
-    /// </summary>
-    private Func<IEvent, CancellationToken, Task<IEvent>> CreateProcessorHandler(MethodInfo method, Type eventType)
-    {
-        var parameters = method.GetParameters();
-        var hasCancellationToken = parameters.Length == 2;
-        var returnType = method.ReturnType;
-
-        // Determine method signature pattern
-        var isAsync = returnType.IsGenericType && returnType.GetGenericTypeDefinition() == typeof(Task<>);
-        var isVoidAsync = returnType == typeof(Task);
-        var isVoidSync = returnType == typeof(void);
-
-        return (evt, cancellationToken) =>
-        {
-            try
-            {
-                object[] args = hasCancellationToken
-                    ? new object[] { evt, cancellationToken }
-                    : new object[] { evt };
-
-                var result = method.Invoke(this, args);
-
-                return returnType switch
-                {
-                    // Async methods returning Task<IEvent>
-                    _ when isAsync => (Task<IEvent>)result,
-
-                    // Async void methods returning Task
-                    _ when isVoidAsync => ((Task)result).ContinueWith(_ => (IEvent)null, cancellationToken),
-
-                    // Sync void methods
-                    _ when isVoidSync => Task.FromResult((IEvent)null),
-
-                    // Sync methods returning IEvent
-                    _ => Task.FromResult((IEvent)result)
-                };
-            }
-            catch (Exception ex)
-            {
-                return Task.FromException<IEvent>(ex);
-            }
-        };
-    }
-
-    /// <summary>
-    /// Processes an event by finding and invoking the most specific handler for the event type.
-    /// </summary>
-    public override async Task<IEvent> ProcessEventAsync(IEvent eventToProcess, CancellationToken cancellationToken)
-    {
-        if (eventToProcess == null)
-            return null;
-
-        var eventType = eventToProcess.GetType();
-
-        // Get or create cached handler for this event type
-        var handler = _handlerCache.GetOrAdd(eventType, GenerateHandlerForEventType);
-
-        return await handler(eventToProcess, cancellationToken);
-    }
-
-    /// <summary>
-    /// Generates a handler function for the specified event type
-    /// </summary>
-    private Func<IEvent, CancellationToken, Task<IEvent>> GenerateHandlerForEventType(Type eventType)
-    {
-        // Find all handlers that could handle this event type
-        var possibleHandlers = _handlers
-            .Where(entry => entry.Key.IsAssignableFrom(eventType))
-            .ToList();
-
-        if (possibleHandlers.Count == 0)
-        {
-            // No handler found - return a no-op handler
-            return (_, _) => Task.FromResult((IEvent)null);
-        }
-
-        // Find the most specific handler
-        var bestMatch = possibleHandlers
-            .OrderBy(entry => GetTypeHierarchyDepth(eventType, entry.Key))
-            .First();
-
-        return CreateProcessorHandler(bestMatch.Value, bestMatch.Key);
-    }
-
-    /// <summary>
-    /// Calculates the inheritance depth between two types for handler resolution
-    /// </summary>
-    private static int GetTypeHierarchyDepth(Type derivedType, Type baseType)
-    {
-        if (!baseType.IsAssignableFrom(derivedType))
-            return int.MaxValue;
-
-        int depth = 0;
-        var currentType = derivedType;
-
-        while (currentType != null && currentType != baseType)
-        {
-            depth++;
-            currentType = currentType.BaseType;
-
-            // Also check interfaces
-            if (currentType == null && baseType.IsInterface)
-            {
-                var interfaces = derivedType.GetInterfaces();
-                if (interfaces.Contains(baseType))
-                {
-                    return depth;
-                }
-            }
-        }
-
-        return currentType == baseType ? depth : int.MaxValue;
-    }
-}
-
 public class Server : StateDrivenEntity, IServer
 {
     private readonly IEnumerable<IComponent> _orderedByHierarchy;
@@ -726,7 +503,7 @@ internal class ConcurrentHashMap<TKey, TValue> : Dictionary<TKey, TValue>
 }
 
 // Placeholder interfaces referenced but not defined in original code
-public interface IRule
+public interface IRule : ICloneable
 {
     bool IsActivated(IEvent @event);
 }
@@ -975,12 +752,12 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     private readonly StateDrivenEntityHelper _stateDrivenEntityHelper;
     private readonly ComponentCounters _counters;
     private readonly ILog _log;
-    private readonly Func<Func<IEvent, Task>, IThreadDispatcher<IEvent>> _dispatcherFactory;
-    private IThreadDispatcher<IEvent> _eventDispatcher;
+    private readonly Func<Func<EventGroup, Task>, IThreadDispatcher<EventGroup>> _dispatcherFactory;
+    private IThreadDispatcher<EventGroup> _eventDispatcher;
 
     protected Component(
         string uniqueName,
-        Func<Func<IEvent, Task>, IThreadDispatcher<IEvent>> dispatcherFactory,
+        Func<Func<EventGroup, Task>, IThreadDispatcher<EventGroup>> dispatcherFactory,
         ILog log = null)
     {
         UniqueName = uniqueName ?? throw new ArgumentNullException(nameof(uniqueName));
@@ -1100,26 +877,17 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
         _log.Info("Notification received with {0} events", notification.EventGroup.Count);
 
         // Dispatch each event in the notification
-        var dispatchTasks = new List<Task>();
-        foreach (var evt in notification.EventGroup)
-        {
-            dispatchTasks.Add(_eventDispatcher.DispatchAsync(evt));
-        }
-
-        await Task.WhenAll(dispatchTasks);
+        await _eventDispatcher.DispatchAsync(notification.EventGroup);
     }
 
     /// <summary>
     /// Internal method called by the dispatcher to process individual events
     /// </summary>
-    private async Task ProcessEventAsync(IEvent evt)
+    private async Task ProcessEventGroupAsync(EventGroup eventGroup)
     {
         try
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-
-            // Create a single-event group for processing
-            var eventGroup = new EventGroup { evt };
 
             // Call the abstract ConsumeAsync method
             await ConsumeAsync(eventGroup, CancellationToken.None);
@@ -1128,16 +896,16 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
             _counters.IncrementNotificationProcessed();
             stopwatch.Stop();
 
-            _log.Info("Processed event {0} in {1}ms", evt.GetType().Name, stopwatch.ElapsedMilliseconds);
+            _log.Info("Processed event {0} in {1}ms", eventGroup.GetType().Name, stopwatch.ElapsedMilliseconds);
         }
         catch (Exception ex)
         {
             _counters.IncrementEventError();
-            _log.Error(ex, "Error processing event {0}", evt.GetType().Name);
+            _log.Error(ex, "Error processing event {0}", eventGroup.GetType().Name);
 
             try
             {
-                await HandleEventErrorAsync(ex, evt, CancellationToken.None);
+                await HandleEventErrorAsync(ex, eventGroup, CancellationToken.None);
             }
             catch (Exception handlerEx)
             {
@@ -1211,7 +979,7 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
         _log.Info("Initializing component");
 
         // Create the event dispatcher
-        _eventDispatcher = _dispatcherFactory(ProcessEventAsync);
+        _eventDispatcher = _dispatcherFactory(ProcessEventGroupAsync);
         _log.Info("Event dispatcher created during initialization");
 
         return Task.CompletedTask;
@@ -1386,9 +1154,9 @@ public static class DispatcherFactory
     /// <summary>
     /// Creates a synchronous dispatcher factory
     /// </summary>
-    public static Func<Func<IEvent, Task>, IThreadDispatcher<IEvent>> CreateSynchronous()
+    public static Func<Func<EventGroup, Task>, IThreadDispatcher<EventGroup>> CreateSynchronous()
     {
-        return processor => new SynchronousDispatcher<IEvent>(processor);
+        return processor => new SynchronousDispatcher<EventGroup>(processor);
     }
 
     /// <summary>
@@ -1693,5 +1461,325 @@ internal class Publisher : IPublisher
     public IEnumerable<IRecipient> Subscribers()
     {
         return _rulesByRecipient.Keys;
+    }
+}
+
+
+/// <summary>
+/// A rule that combines other rules with logical operators
+/// </summary>
+[Serializable]
+public class CompositeRule : IRule
+{
+    private readonly List<IRule> _rules;
+    private readonly LogicalOperator _operator;
+
+    public enum LogicalOperator
+    {
+        And,
+        Or
+    }
+
+    public CompositeRule(LogicalOperator op, params IRule[] rules)
+    {
+        if (rules == null || rules.Length == 0)
+            throw new ArgumentException("At least one rule must be provided", nameof(rules));
+
+        _rules = new List<IRule>(rules);
+        _operator = op;
+    }
+
+    public bool IsActivated(IEvent evt)
+    {
+        if (evt == null)
+            return false;
+
+        switch (_operator)
+        {
+            case LogicalOperator.And:
+                // All rules must match
+                foreach (var rule in _rules)
+                {
+                    if (!rule.IsActivated(evt))
+                        return false;
+                }
+                return true;
+
+            case LogicalOperator.Or:
+                // At least one rule must match
+                foreach (var rule in _rules)
+                {
+                    if (rule.IsActivated(evt))
+                        return true;
+                }
+                return false;
+
+            default:
+                throw new ArgumentOutOfRangeException();
+        }
+    }
+
+    public override bool Equals(object obj)
+    {
+        if (obj is CompositeRule other && _operator == other._operator && _rules.Count == other._rules.Count)
+        {
+            // Check that all rules match (order-dependent)
+            for (int i = 0; i < _rules.Count; i++)
+            {
+                if (!_rules[i].Equals(other._rules[i]))
+                    return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    public override int GetHashCode()
+    {
+        int hash = 17;
+        hash = hash * 31 + _operator.GetHashCode();
+
+        foreach (var rule in _rules)
+        {
+            hash = hash * 31 + rule.GetHashCode();
+        }
+
+        return hash;
+    }
+
+    public object Clone()
+    {
+        return new CompositeRule(this._operator, this._rules.Select(x => (IRule)x.Clone()).ToArray());
+    }
+}
+
+/// <summary>
+/// A rule that matches events based on a property value
+/// </summary>
+[Serializable]
+public class PropertyRule<TEvent, TProperty> : IRule where TEvent : IEvent
+{
+    private readonly string _propertyName;
+    private readonly TProperty _expectedValue;
+    private readonly Func<TEvent, TProperty> _propertyAccessor;
+    private readonly Predicate<TProperty> _predicate;
+
+    /// <summary>
+    /// Creates a rule that matches events with a specific property value
+    /// </summary>
+    public PropertyRule(Expression<Func<TEvent, TProperty>> propertyExpression, TProperty expectedValue)
+    {
+        if (propertyExpression == null)
+            throw new ArgumentNullException(nameof(propertyExpression));
+
+        // Extract property name from the expression
+        if (propertyExpression.Body is MemberExpression memberExpr &&
+            memberExpr.Member is PropertyInfo)
+        {
+            _propertyName = memberExpr.Member.Name;
+        }
+        else
+        {
+            throw new ArgumentException("Expression must be a property access expression", nameof(propertyExpression));
+        }
+
+        _expectedValue = expectedValue;
+        _propertyAccessor = propertyExpression.Compile();
+        _predicate = value => EqualityComparer<TProperty>.Default.Equals(value, _expectedValue);
+    }
+
+    /// <summary>
+    /// Creates a rule that matches events with a property value that satisfies a predicate
+    /// </summary>
+    public PropertyRule(Expression<Func<TEvent, TProperty>> propertyExpression, Predicate<TProperty> predicate)
+    {
+        if (propertyExpression == null)
+            throw new ArgumentNullException(nameof(propertyExpression));
+        if (predicate == null)
+            throw new ArgumentNullException(nameof(predicate));
+
+        // Extract property name from the expression
+        if (propertyExpression.Body is MemberExpression memberExpr &&
+            memberExpr.Member is PropertyInfo)
+        {
+            _propertyName = memberExpr.Member.Name;
+        }
+        else
+        {
+            throw new ArgumentException("Expression must be a property access expression", nameof(propertyExpression));
+        }
+
+        _expectedValue = default; // Not used with predicate
+        _propertyAccessor = propertyExpression.Compile();
+        _predicate = predicate;
+    }
+
+    public bool IsActivated(IEvent evt)
+    {
+        if (evt == null)
+            return false;
+
+        // Check if the event is of the right type
+        if (evt is TEvent typedEvent)
+        {
+            try
+            {
+                // Get the property value and check it with the predicate
+                TProperty value = _propertyAccessor(typedEvent);
+                return _predicate(value);
+            }
+            catch (Exception)
+            {
+                // If property access fails, the rule doesn't match
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    public override bool Equals(object obj)
+    {
+        if (obj is PropertyRule<TEvent, TProperty> other)
+        {
+            return _propertyName == other._propertyName &&
+                   EqualityComparer<TProperty>.Default.Equals(_expectedValue, other._expectedValue);
+        }
+        return false;
+    }
+
+    public override int GetHashCode()
+    {
+        int hash = 17;
+        hash = hash * 31 + _propertyName.GetHashCode();
+        hash = hash * 31 + (_expectedValue != null ? _expectedValue.GetHashCode() : 0);
+        return hash;
+    }
+
+    public object Clone()
+    {
+        throw new NotImplementedException();
+    }
+}
+
+/// <summary>
+/// A rule that negates another rule
+/// </summary>
+[Serializable]
+public class NotRule : IRule
+{
+    private readonly IRule _innerRule;
+
+    public NotRule(IRule rule)
+    {
+        _innerRule = rule ?? throw new ArgumentNullException(nameof(rule));
+    }
+
+    public bool IsActivated(IEvent evt)
+    {
+        return !_innerRule.IsActivated(evt);
+    }
+
+    public override bool Equals(object obj)
+    {
+        if (obj is NotRule other)
+        {
+            return _innerRule.Equals(other._innerRule);
+        }
+        return false;
+    }
+
+    public override int GetHashCode()
+    {
+        return ~_innerRule.GetHashCode();
+    }
+
+    public object Clone()
+    {
+        return new NotRule((IRule)this._innerRule.Clone());
+    }
+}
+
+[Serializable]
+public class TypeRule : IRule
+{
+    private readonly Type _eventType;
+
+    public TypeRule(Type eventType)
+    {
+        if (eventType == null)
+            throw new ArgumentNullException(nameof(eventType));
+
+        if (!typeof(IEvent).IsAssignableFrom(eventType))
+            throw new ArgumentException("Type must implement IEvent", nameof(eventType));
+
+        _eventType = eventType;
+    }
+
+    public bool IsActivated(IEvent evt)
+    {
+        if (evt == null)
+            return false;
+
+        return _eventType.IsInstanceOfType(evt);
+    }
+
+    public override bool Equals(object obj)
+    {
+        if (obj is TypeRule other)
+        {
+            return _eventType == other._eventType;
+        }
+        return false;
+    }
+
+    public override int GetHashCode()
+    {
+        return _eventType.GetHashCode();
+    }
+
+    public object Clone()
+    {
+        return new TypeRule(this._eventType);
+    }
+}
+
+/// <summary>
+/// Helper class to create rules with a fluent syntax
+/// </summary>
+public static class Rules
+{
+    public static TypeRule OfType<T>() where T : IEvent
+    {
+        return new TypeRule(typeof(T));
+    }
+
+    public static PropertyRule<TEvent, TProperty> WithProperty<TEvent, TProperty>(
+        Expression<Func<TEvent, TProperty>> propertyExpression,
+        TProperty expectedValue) where TEvent : IEvent
+    {
+        return new PropertyRule<TEvent, TProperty>(propertyExpression, expectedValue);
+    }
+
+    public static PropertyRule<TEvent, TProperty> WithProperty<TEvent, TProperty>(
+        Expression<Func<TEvent, TProperty>> propertyExpression,
+        Predicate<TProperty> predicate) where TEvent : IEvent
+    {
+        return new PropertyRule<TEvent, TProperty>(propertyExpression, predicate);
+    }
+
+    public static CompositeRule And(params IRule[] rules)
+    {
+        return new CompositeRule(CompositeRule.LogicalOperator.And, rules);
+    }
+
+    public static CompositeRule Or(params IRule[] rules)
+    {
+        return new CompositeRule(CompositeRule.LogicalOperator.Or, rules);
+    }
+
+    public static NotRule Not(IRule rule)
+    {
+        return new NotRule(rule);
     }
 }
