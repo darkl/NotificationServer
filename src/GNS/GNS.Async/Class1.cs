@@ -1,5 +1,7 @@
-﻿using System.Text;
+﻿using System.Diagnostics.Metrics;
+using System.Text;
 using System.Threading.Tasks.Dataflow;
+using System.Xml.Linq;
 
 namespace GNS.Async;
 
@@ -161,6 +163,13 @@ public abstract class Logic : Component
             }
         }
 
+        return result;
+    }
+
+    public override CollectedNode CollectData()
+    {
+        CollectedNode result = base.CollectData();
+        result.AddProperty("EventsProcessed", _counters.EventProcessedCount);
         return result;
     }
 
@@ -658,7 +667,7 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
 {
     private readonly Publisher _publisher;
     private readonly StateDrivenEntityHelper _stateDrivenEntityHelper;
-    private readonly ComponentCounters _counters;
+    protected readonly ComponentCounters _counters;
     private readonly ILog _log;
     private readonly Func<Func<EventGroup, Task>, IThreadDispatcher<EventGroup>> _dispatcherFactory;
     private IThreadDispatcher<EventGroup> _eventDispatcher;
@@ -805,7 +814,6 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
             // Call the abstract ConsumeAsync method
             await ConsumeAsync(eventGroup, CancellationToken.None);
 
-            _counters.IncrementEventProcessed();
             _counters.IncrementNotificationProcessed();
             stopwatch.Stop();
 
@@ -888,7 +896,6 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
         node.AddProperty("DispatcherType", _eventDispatcher?.GetType().Name ?? "Not initialized");
 
         // Add counter metrics
-        node.AddProperty("EventsProcessed", _counters.EventProcessedCount);
         node.AddProperty("EventErrors", _counters.EventErrorCount);
         node.AddProperty("NotificationsReceived", _counters.NotificationReceivedCount);
         node.AddProperty("NotificationsProcessed", _counters.NotificationProcessedCount);
@@ -997,21 +1004,6 @@ public abstract class Component : IComponent, IRecipient, IPublisher, IStateDriv
     #endregion
 
     #region Utility Methods
-    /// <summary>
-    /// Gets a summary of component performance metrics
-    /// </summary>
-    public string GetMetricsSummary()
-    {
-        return $"Component: {UniqueName}, " +
-               $"Events Processed: {_counters.EventProcessedCount}, " +
-               $"Events Errors: {_counters.EventErrorCount}, " +
-               $"Notifications Received: {_counters.NotificationReceivedCount}, " +
-               $"Notifications Processed: {_counters.NotificationProcessedCount}, " +
-               $"State Transitions: {_counters.StateTransitionCount}, " +
-               $"Queue Count: {QueueCount}, " +
-               $"Dispatcher Type: {_eventDispatcher?.GetType().Name ?? "Not initialized"}, " +
-               $"Current State: {CurrentState}";
-    }
 
     /// <summary>
     /// Gets a tree-formatted metrics report
