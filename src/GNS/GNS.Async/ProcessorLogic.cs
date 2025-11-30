@@ -23,7 +23,8 @@ public class ProcessorLogic : Logic
     // Cache of computed handler mappings for concrete event types
     private readonly ConcurrentDictionary<Type, Func<IEvent, CancellationToken, Task<IEvent>>> _handlerCache = new();
 
-    protected ProcessorLogic(string uniqueName, Func<Func<EventGroup, Task>, IThreadDispatcher<EventGroup>> dispatcherFactory) : base(uniqueName, dispatcherFactory)
+    protected ProcessorLogic(string uniqueName, Func<Func<EventGroup, Task>, IThreadDispatcher<EventGroup>> dispatcherFactory) 
+        : base(uniqueName, dispatcherFactory)
     {
         InitializeHandlers();
     }
@@ -111,7 +112,8 @@ public class ProcessorLogic : Logic
     /// <summary>
     /// Creates a strongly-typed processor handler for the given event type and method
     /// </summary>
-    private Func<IEvent, CancellationToken, Task<IEvent>> CreateProcessorHandler(MethodInfo method, Type eventType)
+    private Func<IEvent, CancellationToken, Task<IEvent>> CreateProcessorHandler<TEvent>(MethodInfo method) 
+        where TEvent : IEvent
     {
         var parameters = method.GetParameters();
         var hasCancellationToken = parameters.Length == 2;
@@ -122,36 +124,113 @@ public class ProcessorLogic : Logic
         var isVoidAsync = returnType == typeof(Task);
         var isVoidSync = returnType == typeof(void);
 
-        return (evt, cancellationToken) =>
+        if (isAsync)
         {
-            try
+            // Task<IEvent> methods
+            if (hasCancellationToken)
             {
-                object[] args = hasCancellationToken
-                    ? new object[] { evt, cancellationToken }
-                    : new object[] { evt };
-
-                var result = method.Invoke(this, args);
-
-                return returnType switch
-                {
-                    // Async methods returning Task<IEvent>
-                    _ when isAsync => (Task<IEvent>)result,
-
-                    // Async void methods returning Task
-                    _ when isVoidAsync => ((Task)result).ContinueWith(_ => (IEvent)null, cancellationToken),
-
-                    // Sync void methods
-                    _ when isVoidSync => Task.FromResult((IEvent)null),
-
-                    // Sync methods returning IEvent
-                    _ => Task.FromResult((IEvent)result)
+                // Func<TEvent, CancellationToken, Task<IEvent>>
+                var func = (Func<TEvent, CancellationToken, Task<IEvent>>)
+                    Delegate.CreateDelegate(typeof(Func<TEvent, CancellationToken, Task<IEvent>>), this, method);
+                
+                return (evt, ct) => func((TEvent)evt, ct);
+            }
+            else
+            {
+                // Func<TEvent, Task<IEvent>>
+                var func = (Func<TEvent, Task<IEvent>>)
+                    Delegate.CreateDelegate(typeof(Func<TEvent, Task<IEvent>>), this, method);
+                
+                return (evt, ct) => func((TEvent)evt);
+            }
+        }
+        else if (isVoidAsync)
+        {
+            // Task methods (void async)
+            if (hasCancellationToken)
+            {
+                // Func<TEvent, CancellationToken, Task>
+                var func = (Func<TEvent, CancellationToken, Task>)
+                    Delegate.CreateDelegate(typeof(Func<TEvent, CancellationToken, Task>), this, method);
+                
+                return async (evt, ct) => {
+                    await func((TEvent)evt, ct);
+                    return null;
                 };
             }
-            catch (Exception ex)
+            else
             {
-                return Task.FromException<IEvent>(ex);
+                // Func<TEvent, Task>
+                var func = (Func<TEvent, Task>)
+                    Delegate.CreateDelegate(typeof(Func<TEvent, Task>), this, method);
+                
+                return async (evt, ct) => {
+                    await func((TEvent)evt);
+                    return null;
+                };
             }
-        };
+        }
+        else if (isVoidSync)
+        {
+            // void methods
+            // Action<TEvent> or Action<TEvent, CancellationToken>
+            if (hasCancellationToken)
+            {
+                var action = (Action<TEvent, CancellationToken>)
+                    Delegate.CreateDelegate(typeof(Action<TEvent, CancellationToken>), this, method);
+                
+                return (evt, ct) => {
+                    action((TEvent)evt, ct);
+                    return Task.FromResult((IEvent)null);
+                };
+            }
+            else
+            {
+                var action = (Action<TEvent>)
+                    Delegate.CreateDelegate(typeof(Action<TEvent>), this, method);
+                
+                return (evt, ct) => {
+                    action((TEvent)evt);
+                    return Task.FromResult((IEvent)null);
+                };
+            }
+        }
+        else
+        {
+            // IEvent methods (sync)
+            if (hasCancellationToken)
+            {
+                // Func<TEvent, CancellationToken, IEvent>
+                var func = (Func<TEvent, CancellationToken, IEvent>)
+                    Delegate.CreateDelegate(typeof(Func<TEvent, CancellationToken, IEvent>), this, method);
+                
+                return (evt, ct) => Task.FromResult(func((TEvent)evt, ct));
+            }
+            else
+            {
+                // Func<TEvent, IEvent>
+                var func = (Func<TEvent, IEvent>)
+                    Delegate.CreateDelegate(typeof(Func<TEvent, IEvent>), this, method);
+                
+                return (evt, ct) => Task.FromResult(func((TEvent)evt));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Creates a processor handler for the given method and eventType using reflection
+    /// </summary>
+    private Func<IEvent, CancellationToken, Task<IEvent>> CreateProcessorHandlerViaReflection(MethodInfo method, Type eventType)
+    {
+        // Get the generic method
+        var genericMethod = typeof(ProcessorLogic).GetMethod(nameof(CreateProcessorHandler),
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
+        // Create the specific generic method for this event type
+        var specificMethod = genericMethod.MakeGenericMethod(eventType);
+
+        // Invoke it to create our handler
+        return (Func<IEvent, CancellationToken, Task<IEvent>>)specificMethod.Invoke(this, new object[] { method });
     }
 
     /// <summary>
@@ -191,7 +270,7 @@ public class ProcessorLogic : Logic
             .OrderBy(entry => GetTypeHierarchyDepth(eventType, entry.Key))
             .First();
 
-        return CreateProcessorHandler(bestMatch.Value, bestMatch.Key);
+        return CreateProcessorHandlerViaReflection(bestMatch.Value, bestMatch.Key);
     }
 
     /// <summary>
